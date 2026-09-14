@@ -1,6 +1,7 @@
 import os
-import requests
-from fastapi import FastAPI, Request, HTTPException
+import asyncio
+import aiohttp
+from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -9,18 +10,22 @@ from aiogram.types import (
     Message, CallbackQuery, 
     ReplyKeyboardMarkup, KeyboardButton, 
     InlineKeyboardMarkup, InlineKeyboardButton,
-    ChatMemberUpdated
+    ChatMemberUpdated, Update
 )
 from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER
 
 # =============================================================
-# CONFIGURATION - REPLACE WITH YOUR REAL DETAILS
+# CONFIGURATION - CREDENTIALS & API KEYS
 # =============================================================
-BOT_TOKEN = "8815085413:AAEfnbcABdQbIdiZXSqKM9Tqt7e0VKx_SDY"
-GROUP_CHAT_ID = "-1004315686306"         # Your Telegram Group ID
-ADMIN_CHAT_ID = "7103520365"              # Your personal Telegram User ID
-SITE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"
+BOT_TOKEN = "8815085413:AAEfnbcABdQbIdiZXSqKM9Tqt7e0VKx_SDY"               # Replace with your Telegram Bot Token
+GROUP_CHAT_ID = "-1004315686306"                 # Replace with your Telegram Group ID
+ADMIN_CHAT_ID = "7103520365"                      # Replace with your Admin Telegram User ID
 GROUP_INVITE_LINK = "https://t.me/lekotpzone"
+RENDER_URL = "https://otp-telegram-bot-fpmp.onrender.com"
+
+# THIRDWAVE API CONFIGURATION
+THIRDWAVE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"        # Your Thirdwave Bearer API Key
+THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
 # FLAT PAYOUT RATE FOR ALL SERVICES ($0.003)
 FLAT_OTP_RATE = 0.003
@@ -29,9 +34,10 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 app = FastAPI()
 
-# In-memory storage (Replace with database for long-term storage)
-ASSIGNED_NUMBERS = {}
-USER_BALANCES = {}
+# In-memory storage
+ASSIGNED_NUMBERS = {}  # {phone_number: {"user_id": user_id, "service": service_name}}
+USER_BALANCES = {}     # {user_id: balance_float}
+PROCESSED_OTPS = set() # To track and avoid duplicate OTP payouts
 
 # -------------------------------------------------------------
 # FSM STATES FOR WITHDRAWAL PROCESS
@@ -40,7 +46,7 @@ class WithdrawalState(StatesGroup):
     waiting_for_amount = State()
     waiting_for_bank_details = State()
 
-# Helper: Check if user is in group
+# Helper: Check group membership
 async def is_user_in_group(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=GROUP_CHAT_ID, user_id=user_id)
@@ -48,7 +54,7 @@ async def is_user_in_group(user_id: int) -> bool:
     except Exception:
         return False
 
-# Permanent Bottom Menu
+# Permanent Bottom Keyboard
 def get_main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -70,8 +76,9 @@ async def on_user_join_group(event: ChatMemberUpdated):
         f"🎉 Welcome **{user_name}** to **Lekdigital Number Zone**!\n\n"
         f"Start our bot to get virtual numbers and receive instant payouts."
     )
+    bot_me = await bot.get_me()
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Start Bot", url=f"https://t.me/{(await bot.get_me()).username}")]
+        [InlineKeyboardButton(text="🤖 Start Bot", url=f"https://t.me/{bot_me.username}")]
     ])
     await bot.send_message(chat_id=GROUP_CHAT_ID, text=welcome_text, reply_markup=kb, parse_mode="Markdown")
 
@@ -106,25 +113,41 @@ async def recheck_join(callback: CallbackQuery):
         await callback.answer("❌ You haven't joined the group yet!", show_alert=True)
 
 # -------------------------------------------------------------
-# 3. GET NUMBER BUTTON
+# 3. GET NUMBER FROM THIRDWAVE API
 # -------------------------------------------------------------
 @dp.message(F.text == "📱 GET NUMBER")
 async def get_number_handler(message: Message):
-    inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Change Number", callback_data="change_num"), 
-         InlineKeyboardButton(text="🌐 Change Country", callback_data="change_country")],
-        [InlineKeyboardButton(text="🚫 Remove Country Code", callback_data="remove_code")],
-        [InlineKeyboardButton(text="🚀 Otp Group", url=GROUP_INVITE_LINK)],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="go_back")]
-    ])
+    user_id = message.from_user.id
+    
+    headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "Content-Type": "application/json"}
+    payload = {"quantity": 1}  # Default allocation payload
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{THIRDWAVE_BASE_URL}/numbers/allocate", json=payload, headers=headers) as resp:
+            if resp.status == 200:
+                res_data = await resp.json()
+                numbers_list = res_data.get("numbers", [])
+                
+                if numbers_list:
+                    assigned_num = str(numbers_list[0].get("number"))
+                    ASSIGNED_NUMBERS[assigned_num] = {"user_id": user_id, "service": "General"}
 
-    response = (
-        "🌐 **Number Assigned:**\n\n"
-        "⏳ **Waiting for OTP...**\n"
-        f"**Per OTP Rate:** `${FLAT_OTP_RATE}`\n"
-        "━━━━━━━━━━━━━━━━━━━"
-    )
-    await message.answer(response, reply_markup=inline_kb, parse_mode="Markdown")
+                    inline_kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🔄 Change Number", callback_data="get_number_handler"), 
+                         InlineKeyboardButton(text="🚀 Otp Group", url=GROUP_INVITE_LINK)]
+                    ])
+
+                    response = (
+                        f"🌐 **Number Assigned Successfully!**\n\n"
+                        f"📱 Phone Number: `{assigned_num}`\n"
+                        f"⏳ **Waiting for OTP...**\n"
+                        f"💰 **Per OTP Rate:** `${FLAT_OTP_RATE}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━"
+                    )
+                    await message.answer(response, reply_markup=inline_kb, parse_mode="Markdown")
+                    return
+
+            await message.answer("❌ Failed to fetch a number at the moment. Please try again shortly.")
 
 # -------------------------------------------------------------
 # 4. BALANCE & WITHDRAWAL SYSTEM
@@ -208,67 +231,94 @@ async def handle_admin_decision(callback: CallbackQuery):
     await callback.answer()
 
 # -------------------------------------------------------------
-# 5. DYNAMIC WEBHOOK ENDPOINT (ALL COUNTRIES, SERVICES & TAP-TO-COPY)
+# 5. BACKGROUND POLLING FOR THIRDWAVE TRAFFIC & OTPs
 # -------------------------------------------------------------
-@app.get("/")
-async def root():
-    return {"status": "online"}
-
-@app.post("/api/incoming-otp")
-async def handle_incoming_otp(request: Request):
-    if request.headers.get("X-API-KEY") != SITE_API_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    data = await request.json()
-    phone_number = data.get("phone_number", "").strip()
-    otp_code = data.get("otp", "").strip()
-    service_name = data.get("service", "General").strip().capitalize()
-    country_name = data.get("country", "Global").strip()
-
-    if not phone_number or not otp_code:
-        raise HTTPException(status_code=400, detail="Missing phone_number or otp parameters")
-
-    # 1. DIRECT USER PAYOUT NOTIFICATION (TAP-TO-COPY NUMBER & CODE)
-    number_info = ASSIGNED_NUMBERS.get(phone_number)
-    if number_info:
-        user_id = number_info["user_id"]
-        USER_BALANCES[user_id] = USER_BALANCES.get(user_id, 0.0) + FLAT_OTP_RATE
-        
-        private_msg = (
-            f"🌐 **#{service_name.upper()} OTP Received!**\n\n"
-            f"📍 Country: {country_name}\n"
-            f"📱 Number: `{phone_number}`\n"
-            f"🔑 Code: `{otp_code}`\n"
-            f"💰 Credited: +${FLAT_OTP_RATE}"
-        )
-        try:
-            await bot.send_message(chat_id=user_id, text=private_msg, parse_mode="Markdown")
-        except Exception as e:
-            print(f"Error sending DM: {e}")
-
-    # 2. PUBLIC GROUP BROADCAST (TAP-TO-COPY NUMBER & CODE)
-    group_msg = (
-        f"🌐 **Temp number ({country_name})**\n"
-        f"🟢 {service_name} | `{phone_number}`\n"
-        f"💰 Rate: `${FLAT_OTP_RATE}` per OTP\n\n"
-        f"**OTP Code:** `{otp_code}`"
-    )
+async def poll_thirdwave_traffic():
+    headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}
+    bot_info = await bot.get_me()
     
-    bot_username = (await bot.get_me()).username
-    group_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📢 Channel", url=GROUP_INVITE_LINK),
-            InlineKeyboardButton(text=f"🛡️ {otp_code}", callback_data="copy_otp")
-        ],
-        [
-            InlineKeyboardButton(text="📞 Get Number", url=f"https://t.me/{bot_username}")
-        ]
-    ])
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{THIRDWAVE_BASE_URL}/traffic", headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        rows = data.get("rows", [])
+                        
+                        for item in rows:
+                            msg_id = item.get("id")
+                            if msg_id in PROCESSED_OTPS:
+                                continue
+                            
+                            phone_number = str(item.get("number", "")).strip()
+                            otp_code = str(item.get("otp", "")).strip()
+                            service_name = str(item.get("service", "General")).strip().capitalize()
+                            country_name = str(item.get("country", "Global")).strip()
 
-    try:
-        await bot.send_message(chat_id=GROUP_CHAT_ID, text=group_msg, reply_markup=group_kb, parse_mode="Markdown")
-    except Exception as e:
-        print(f"Error posting to group: {e}")
+                            if not otp_code:
+                                continue
 
-    return {"status": "success", "country": country_name, "service": service_name, "rate": FLAT_OTP_RATE}
-  
+                            PROCESSED_OTPS.add(msg_id)
+
+                            # 1. Private DM Notification
+                            number_info = ASSIGNED_NUMBERS.get(phone_number)
+                            if number_info:
+                                u_id = number_info["user_id"]
+                                USER_BALANCES[u_id] = USER_BALANCES.get(u_id, 0.0) + FLAT_OTP_RATE
+                                
+                                p_msg = (
+                                    f"🌐 **#{service_name.upper()} OTP Received!**\n\n"
+                                    f"📍 Country: {country_name}\n"
+                                    f"📱 Number: `{phone_number}`\n"
+                                    f"🔑 Code: `{otp_code}`\n"
+                                    f"💰 Credited: +${FLAT_OTP_RATE}"
+                                )
+                                try:
+                                    await bot.send_message(chat_id=u_id, text=p_msg, parse_mode="Markdown")
+                                except Exception as e:
+                                    print(f"Error sending DM: {e}")
+
+                            # 2. Public Group Broadcast
+                            g_msg = (
+                                f"🌐 **Temp number ({country_name})**\n"
+                                f"🟢 {service_name} | `{phone_number}`\n"
+                                f"💰 Rate: `${FLAT_OTP_RATE}` per OTP\n\n"
+                                f"**OTP Code:** `{otp_code}`"
+                            )
+                            g_kb = InlineKeyboardMarkup(inline_keyboard=[
+                                [
+                                    InlineKeyboardButton(text="📢 Channel", url=GROUP_INVITE_LINK),
+                                    InlineKeyboardButton(text=f"🛡️ {otp_code}", callback_data="copy_otp")
+                                ],
+                                [InlineKeyboardButton(text="📞 Get Number", url=f"https://t.me/{bot_info.username}")]
+                            ])
+                            try:
+                                await bot.send_message(chat_id=GROUP_CHAT_ID, text=g_msg, reply_markup=g_kb, parse_mode="Markdown")
+                            except Exception as e:
+                                print(f"Error posting group message: {e}")
+
+        except Exception as e:
+            print(f"Traffic Polling Error: {e}")
+
+        await asyncio.sleep(5)  # Poll every 5 seconds
+
+# -------------------------------------------------------------
+# 6. FASTAPI WEBHOOK & LIFECYCLE
+# -------------------------------------------------------------
+@app.on_event("startup")
+async def on_startup():
+    # Register Webhook dynamically on startup
+    webhook_url = f"{RENDER_URL}/telegram-webhook"
+    await bot.set_webhook(webhook_url)
+    asyncio.create_task(poll_thirdwave_traffic())
+
+@app.post("/telegram-webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = Update.model_validate(data, context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return {"status": "ok"}
+
+@app.get("/")
+async def health_check():
+    return {"status": "bot online"}
