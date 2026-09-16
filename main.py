@@ -5,17 +5,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, F
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.types import Update
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, Update
 
 # =============================================================
-# CONFIGURATION - PUT YOUR EXACT API KEYS HERE
+# CONFIGURATION - PUT YOUR EXACT CREDENTIALS HERE
 # =============================================================
-BOT_TOKEN = "8815085413:AAEs9NQaPUQivyspR6Tcrts3Jr9PO6O61f0"                   # Replace with your actual Bot Token
+BOT_TOKEN = "8815085413:AAEs9NQaPUQivyspR6Tcrts3Jr9PO6O61f0"                   # Replace with your actual Telegram Bot Token
 RENDER_URL = "https://otp-telegram-bot-fpmp.onrender.com"
 
 # THIRDWAVE API CONFIGURATION
-THIRDWAVE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"        # Replace with your Thirdwave API Key
+THIRDWAVE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"        # Replace with your actual Thirdwave API Key
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
 FLAT_OTP_RATE = 0.003
@@ -52,24 +51,24 @@ async def get_number_handler(message: Message):
     user_id = message.from_user.id
     headers = {
         "Authorization": f"Bearer {THIRDWAVE_API_KEY}",
-        "Content-Type": "application/json",
         "Accept": "application/json"
     }
     
-    # Send request to Thirdwave API
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(f"{THIRDWAVE_BASE_URL}/numbers/allocate", json={"quantity": 1}, headers=headers) as resp:
+            # Using GET request format with query parameter
+            async with session.get(f"{THIRDWAVE_BASE_URL}/numbers/request?count=1", headers=headers) as resp:
                 status = resp.status
                 text_response = await resp.text()
                 
-                # IF SUCCESS
+                # Success check
                 if status in [200, 201]:
                     try:
                         res_data = await resp.json()
-                        numbers_list = res_data.get("numbers", []) or res_data.get("data", [])
-                        if numbers_list:
-                            assigned_num = str(numbers_list[0].get("number") if isinstance(numbers_list[0], dict) else numbers_list[0])
+                        numbers = res_data.get("numbers") or res_data.get("data") or res_data.get("number")
+                        
+                        if numbers:
+                            assigned_num = str(numbers[0] if isinstance(numbers, list) else numbers)
                             ASSIGNED_NUMBERS[assigned_num] = {"user_id": user_id}
                             
                             response = (
@@ -81,17 +80,18 @@ async def get_number_handler(message: Message):
                             await message.answer(response, reply_markup=get_main_menu(), parse_mode="Markdown")
                             return
                         else:
-                            await message.answer(f"⚠️ Response received, but no numbers in array:\n`{text_response}`", parse_mode="Markdown")
+                            await message.answer(f"⚠️ Response received, but no numbers returned:\n`{text_response}`", parse_mode="Markdown")
                             return
                     except Exception as json_err:
                         await message.answer(f"⚠️ JSON Parse Error: {json_err}\nRaw: `{text_response}`", parse_mode="Markdown")
                         return
                 else:
-                    # DIRECT DIAGNOSTIC ERROR SENT TO TELEGRAM CHAT
+                    # Detailed diagnostic message sent to chat
                     await message.answer(f"❌ **API Error (Status Code {status}):**\n`{text_response[:300]}`", parse_mode="Markdown")
                     return
+
     except Exception as err:
-        await message.answer(f"❌ **Connection Exception:**\n`{str(err)}`", parse_mode="Markdown")
+        await message.answer(f"❌ **Connection Error:**\n`{str(err)}`", parse_mode="Markdown")
 
 @dp.message(F.text == "💰 BALANCE")
 async def balance_handler(message: Message):
@@ -100,13 +100,52 @@ async def balance_handler(message: Message):
     await message.answer(f"👤 **User ID:** `{user_id}`\n💵 **Balance:** `${balance:.4f}`", parse_mode="Markdown")
 
 # -------------------------------------------------------------
+# THIRDWAVE BACKGROUND TRAFFIC WORKER
+# -------------------------------------------------------------
+async def poll_thirdwave_traffic():
+    headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{THIRDWAVE_BASE_URL}/traffic", headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        rows = data.get("rows", [])
+                        for item in rows:
+                            msg_id = item.get("id")
+                            if msg_id in PROCESSED_OTPS:
+                                continue
+                            
+                            phone_number = str(item.get("number", "")).strip()
+                            otp_code = str(item.get("otp", "")).strip()
+                            if not otp_code:
+                                continue
+
+                            PROCESSED_OTPS.add(msg_id)
+                            number_info = ASSIGNED_NUMBERS.get(phone_number)
+                            
+                            if number_info:
+                                u_id = number_info["user_id"]
+                                USER_BALANCES[u_id] = USER_BALANCES.get(u_id, 0.0) + FLAT_OTP_RATE
+                                await bot.send_message(
+                                    chat_id=u_id, 
+                                    text=f"🌐 **OTP Received!**\n📱 `{phone_number}`\n🔑 Code: `{otp_code}`", 
+                                    parse_mode="Markdown"
+                                )
+        except Exception:
+            pass
+        await asyncio.sleep(5)
+
+# -------------------------------------------------------------
 # FASTAPI WEB SERVER SETUP
 # -------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     webhook_url = f"{RENDER_URL}/telegram-webhook"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)
+    polling_task = asyncio.create_task(poll_thirdwave_traffic())
     yield
+    polling_task.cancel()
     await bot.delete_webhook()
 
 app = FastAPI(lifespan=lifespan)
@@ -122,4 +161,4 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
-                            
+    
