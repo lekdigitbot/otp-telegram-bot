@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import aiohttp
 import html
@@ -26,10 +27,21 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # In-memory database structures
-AVAILABLE_NUMBERS = {}      # Format: {"WhatsApp": ["234701...", "234702..."], "Talabat": [...]}
+AVAILABLE_NUMBERS = {}      # Format: {"WhatsApp": ["234701...", "234702..."]}
 ASSIGNED_NUMBERS = {}       # Format: {phone_number: {"user_id": 12345, "service": "WhatsApp"}}
 USER_BALANCES = {}          # Format: {user_id: balance}
-PROCESSED_OTPS = set()      # Processed OTP IDs
+PROCESSED_OTPS = set()       # Processed OTP IDs
+
+def extract_otp_code(body: str, fallback_otp: str = "") -> str:
+    """Extract 4 to 8 digit code from message text if API returns empty OTP."""
+    if fallback_otp and str(fallback_otp).strip() and str(fallback_otp) != "None":
+        return str(fallback_otp).strip()
+    
+    # Search for 4 to 8 digit numbers in message body
+    match = re.search(r'\b\d{4,8}\b', body)
+    if match:
+        return match.group(0)
+    return "No Code"
 
 def get_main_menu():
     return ReplyKeyboardMarkup(
@@ -47,39 +59,23 @@ def get_main_menu():
 # -------------------------------------------------------------
 @dp.message(F.text.startswith("/addnumber"))
 async def add_number_admin(message: Message):
-    """
-    Usage:
-    /addnumber WhatsApp 2347010403828, 2347010413361
-    OR
-    /addnumber WhatsApp
-    2347010403828
-    2347010413361
-    """
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ <b>Unauthorized:</b> Admin only command.", parse_mode="HTML")
         return
 
-    # Parse input lines or comma separation
     lines = message.text.strip().split("\n")
     header_parts = lines[0].replace("/addnumber", "").strip().split(maxsplit=1)
     
     if not header_parts:
-        await message.answer(
-            "⚠️ <b>Usage Format:</b>\n"
-            "<code>/addnumber WhatsApp 2347010403828, 2347010413361</code>\n"
-            "<i>(Or put numbers on new lines)</i>", 
-            parse_mode="HTML"
-        )
+        await message.answer("⚠️ <b>Usage:</b> <code>/addnumber Bolt 2348052278526, 2347010747834</code>", parse_mode="HTML")
         return
 
     service_name = header_parts[0].capitalize()
     raw_numbers = []
 
-    # Handle inline comma numbers
     if len(header_parts) > 1:
         raw_numbers.extend(header_parts[1].split(","))
 
-    # Handle multiline numbers
     if len(lines) > 1:
         for line in lines[1:]:
             raw_numbers.extend(line.split(","))
@@ -94,16 +90,13 @@ async def add_number_admin(message: Message):
         AVAILABLE_NUMBERS[service_name] = []
     
     AVAILABLE_NUMBERS[service_name].extend(new_numbers)
-    total_stock = len(AVAILABLE_NUMBERS[service_name])
 
-    # 1. Respond to Admin
     await message.answer(
         f"✅ <b>Added {len(new_numbers)} number(s) to {service_name}!</b>\n"
-        f"📦 <b>Total {service_name} Stock:</b> <code>{total_stock}</code>",
+        f"📦 <b>Total Stock:</b> <code>{len(AVAILABLE_NUMBERS[service_name])}</code>",
         parse_mode="HTML"
     )
 
-    # 2. Notify Telegram Group about new stock update
     group_announcement = (
         f"📢 <b>NEW STOCK UPDATE!</b> 📢\n\n"
         f"🔹 <b>Service:</b> {service_name}\n"
@@ -113,7 +106,7 @@ async def add_number_admin(message: Message):
     try:
         await bot.send_message(chat_id=TELEGRAM_GROUP_ID, text=group_announcement, parse_mode="HTML")
     except Exception as err:
-        print(f"[ERROR] Failed to announce stock in group: {err}")
+        print(f"[ERROR] Stock announcement failed: {err}")
 
 # -------------------------------------------------------------
 # USER HANDLERS & SERVICE SELECTION
@@ -125,12 +118,10 @@ async def start_handler(message: Message):
 
 @dp.message(F.text == "📱 GET NUMBER")
 async def show_services_handler(message: Message):
-    """Shows inline list of available services with stock."""
-    # Filter services that currently have available numbers
     active_services = {srv: nums for srv, nums in AVAILABLE_NUMBERS.items() if len(nums) >= 2}
 
     if not active_services:
-        await message.answer("⚠️ <b>Out of Stock!</b> No services have enough numbers right now. Check back soon!", reply_markup=get_main_menu(), parse_mode="HTML")
+        await message.answer("⚠️ <b>Out of Stock!</b> No services have at least 2 numbers available right now.", reply_markup=get_main_menu(), parse_mode="HTML")
         return
 
     buttons = []
@@ -149,7 +140,6 @@ async def process_service_selection(callback: CallbackQuery):
         await callback.answer("⚠️ Not enough numbers left for this service!", show_alert=True)
         return
 
-    # Assign exactly 2 numbers to the user
     assigned_1 = AVAILABLE_NUMBERS[service_name].pop(0)
     assigned_2 = AVAILABLE_NUMBERS[service_name].pop(0)
 
@@ -165,8 +155,9 @@ async def process_service_selection(callback: CallbackQuery):
         f"💰 <b>Rate:</b> <code>${FLAT_OTP_RATE}</code> / OTP\n\n"
         f"📢 <i>All incoming OTPs stream directly to our main group!</i>"
     )
-    await callback.message.edit_text(response, parse_mode="HTML")
+    
     await callback.answer()
+    await callback.message.answer(response, parse_mode="HTML")
 
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def live_traffic_handler(message: Message):
@@ -183,8 +174,9 @@ async def live_traffic_handler(message: Message):
                         text = "🔴 <b>Recent 5 OTP Traffic:</b>\n\n"
                         for item in rows[:5]:
                             dest = html.escape(str(item.get("destinationNumber", "N/A")))
-                            otp = html.escape(str(item.get("otp", "No Code")))
                             body = html.escape(str(item.get("messageBody", "")))
+                            otp = html.escape(extract_otp_code(body, item.get("otp")))
+                            
                             text += f"📱 <b>Num:</b> <code>{dest}</code>\n🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <code>{body[:40]}</code>\n───\n"
                         await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
                         return
@@ -222,20 +214,16 @@ async def poll_thirdwave_traffic():
                                 continue
 
                             phone_number = str(item.get("destinationNumber", "")).strip()
-                            otp_code = str(item.get("otp", "")).strip()
                             body = str(item.get("messageBody", ""))
-
-                            if not otp_code:
-                                continue
+                            otp_code = extract_otp_code(body, item.get("otp"))
 
                             PROCESSED_OTPS.add(msg_id)
 
-                            # Escape special HTML characters inside SMS bodies
                             safe_phone = html.escape(phone_number)
                             safe_otp = html.escape(otp_code)
                             safe_body = html.escape(body)
 
-                            # 1. Broadcast OTP into main Telegram Group
+                            # 1. Forward to Telegram Group
                             group_msg = (
                                 f"🔥 <b>NEW OTP RECEIVED!</b> 🔥\n\n"
                                 f"📱 <b>Number:</b> <code>{safe_phone}</code>\n"
@@ -248,7 +236,7 @@ async def poll_thirdwave_traffic():
                             except Exception as group_err:
                                 print(f"[ERROR] Group Forwarding Failed: {group_err}")
 
-                            # 2. Update specific user balance & send private DM
+                            # 2. Direct message to assigned user
                             if phone_number in ASSIGNED_NUMBERS:
                                 user_info = ASSIGNED_NUMBERS[phone_number]
                                 u_id = user_info["user_id"]
@@ -291,3 +279,4 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
+    
