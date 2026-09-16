@@ -23,7 +23,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # In-memory storage
-ASSIGNED_NUMBERS = {}
 USER_BALANCES = {}
 PROCESSED_OTPS = set()
 
@@ -48,7 +47,7 @@ async def start_handler(message: Message):
 
 @dp.message(F.text == "📱 GET NUMBER")
 async def get_number_handler(message: Message):
-    user_id = message.from_user.id
+    """Fetches active ranges from Thirdwave's /access-list endpoint."""
     headers = {
         "Authorization": f"Bearer {THIRDWAVE_API_KEY}",
         "Accept": "application/json"
@@ -56,42 +55,67 @@ async def get_number_handler(message: Message):
     
     try:
         async with aiohttp.ClientSession() as session:
-            # Using GET request format with query parameter
-            async with session.get(f"{THIRDWAVE_BASE_URL}/numbers/request?count=1", headers=headers) as resp:
-                status = resp.status
-                text_response = await resp.text()
-                
-                # Success check
-                if status in [200, 201]:
-                    try:
-                        res_data = await resp.json()
-                        numbers = res_data.get("numbers") or res_data.get("data") or res_data.get("number")
+            async with session.get(f"{THIRDWAVE_BASE_URL}/access-list", headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # Expecting a list or dict of available ranges
+                    items = data if isinstance(data, list) else data.get("rows", [])
+                    
+                    if items:
+                        text = "📱 **Available Shared Ranges & Sender IDs:**\n\n"
+                        for item in items[:10]:  # Limit output length
+                            range_name = item.get("rangeName", "Unknown")
+                            source = item.get("sourceAddress", "All")
+                            template = item.get("rangeTemplate", "N/A")
+                            rate = item.get("rate", FLAT_OTP_RATE)
+                            text += f"🔹 **{range_name}** ({source})\n    Format: `{template}` | Rate: `${rate}`\n\n"
                         
-                        if numbers:
-                            assigned_num = str(numbers[0] if isinstance(numbers, list) else numbers)
-                            ASSIGNED_NUMBERS[assigned_num] = {"user_id": user_id}
-                            
-                            response = (
-                                f"🌐 **Number Assigned Successfully!**\n\n"
-                                f"📱 Phone Number: `{assigned_num}`\n"
-                                f"⏳ **Waiting for OTP...**\n"
-                                f"💰 **Per OTP Rate:** `${FLAT_OTP_RATE}`"
-                            )
-                            await message.answer(response, reply_markup=get_main_menu(), parse_mode="Markdown")
-                            return
-                        else:
-                            await message.answer(f"⚠️ Response received, but no numbers returned:\n`{text_response}`", parse_mode="Markdown")
-                            return
-                    except Exception as json_err:
-                        await message.answer(f"⚠️ JSON Parse Error: {json_err}\nRaw: `{text_response}`", parse_mode="Markdown")
+                        text += "💡 *Use these active number patterns to receive SMS. Tap 🔴 LIVE TRAFFIC to view incoming OTPs!*"
+                        await message.answer(text, reply_markup=get_main_menu(), parse_mode="Markdown")
+                        return
+                    else:
+                        await message.answer("⚠️ No active ranges found right now.", reply_markup=get_main_menu())
                         return
                 else:
-                    # Detailed diagnostic message sent to chat
-                    await message.answer(f"❌ **API Error (Status Code {status}):**\n`{text_response[:300]}`", parse_mode="Markdown")
+                    raw_err = await resp.text()
+                    await message.answer(f"❌ **API Error ({resp.status}):**\n`{raw_err[:200]}`", parse_mode="Markdown")
                     return
-
     except Exception as err:
-        await message.answer(f"❌ **Connection Error:**\n`{str(err)}`", parse_mode="Markdown")
+        await message.answer(f"❌ **Connection Error:** `{str(err)}`", parse_mode="Markdown")
+
+@dp.message(F.text == "🔴 LIVE TRAFFIC")
+async def live_traffic_handler(message: Message):
+    """Fetches latest incoming messages from Thirdwave's /traffic endpoint."""
+    headers = {
+        "Authorization": f"Bearer {THIRDWAVE_API_KEY}",
+        "Accept": "application/json"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=5", headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    rows = data.get("rows", [])
+                    
+                    if rows:
+                        text = "🔴 **Recent Live OTP Traffic:**\n\n"
+                        for item in rows[:5]:
+                            dest = item.get("destinationNumber", "N/A")
+                            otp = item.get("otp", "No Code")
+                            body = item.get("messageBody", "")
+                            text += f"📱 **Num:** `{dest}`\n🔑 **OTP:** `{otp}`\n💬 `{body[:50]}`\n───\n"
+                        await message.answer(text, reply_markup=get_main_menu(), parse_mode="Markdown")
+                        return
+                    else:
+                        await message.answer("ℹ️ No recent traffic found.", reply_markup=get_main_menu())
+                        return
+                else:
+                    raw_err = await resp.text()
+                    await message.answer(f"❌ **Traffic API Error ({resp.status}):**\n`{raw_err[:200]}`", parse_mode="Markdown")
+                    return
+    except Exception as err:
+        await message.answer(f"❌ **Connection Error:** `{str(err)}`", parse_mode="Markdown")
 
 @dp.message(F.text == "💰 BALANCE")
 async def balance_handler(message: Message):
@@ -100,52 +124,13 @@ async def balance_handler(message: Message):
     await message.answer(f"👤 **User ID:** `{user_id}`\n💵 **Balance:** `${balance:.4f}`", parse_mode="Markdown")
 
 # -------------------------------------------------------------
-# THIRDWAVE BACKGROUND TRAFFIC WORKER
-# -------------------------------------------------------------
-async def poll_thirdwave_traffic():
-    headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{THIRDWAVE_BASE_URL}/traffic", headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        rows = data.get("rows", [])
-                        for item in rows:
-                            msg_id = item.get("id")
-                            if msg_id in PROCESSED_OTPS:
-                                continue
-                            
-                            phone_number = str(item.get("number", "")).strip()
-                            otp_code = str(item.get("otp", "")).strip()
-                            if not otp_code:
-                                continue
-
-                            PROCESSED_OTPS.add(msg_id)
-                            number_info = ASSIGNED_NUMBERS.get(phone_number)
-                            
-                            if number_info:
-                                u_id = number_info["user_id"]
-                                USER_BALANCES[u_id] = USER_BALANCES.get(u_id, 0.0) + FLAT_OTP_RATE
-                                await bot.send_message(
-                                    chat_id=u_id, 
-                                    text=f"🌐 **OTP Received!**\n📱 `{phone_number}`\n🔑 Code: `{otp_code}`", 
-                                    parse_mode="Markdown"
-                                )
-        except Exception:
-            pass
-        await asyncio.sleep(5)
-
-# -------------------------------------------------------------
 # FASTAPI WEB SERVER SETUP
 # -------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     webhook_url = f"{RENDER_URL}/telegram-webhook"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)
-    polling_task = asyncio.create_task(poll_thirdwave_traffic())
     yield
-    polling_task.cancel()
     await bot.delete_webhook()
 
 app = FastAPI(lifespan=lifespan)
@@ -161,4 +146,3 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
-    
