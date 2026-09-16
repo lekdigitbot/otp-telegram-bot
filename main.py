@@ -37,7 +37,6 @@ def extract_otp_code(body: str, fallback_otp: str = "") -> str:
     if fallback_otp and str(fallback_otp).strip() and str(fallback_otp) != "None":
         return str(fallback_otp).strip()
     
-    # Search for 4 to 8 digit numbers in message body
     match = re.search(r'\b\d{4,8}\b', body)
     if match:
         return match.group(0)
@@ -133,31 +132,41 @@ async def show_services_handler(message: Message):
 
 @dp.callback_query(F.data.startswith("get_"))
 async def process_service_selection(callback: CallbackQuery):
+    # Answer immediately to stop the loading spinner instantly
+    await callback.answer()
+
     service_name = callback.data.replace("get_", "")
     user_id = callback.from_user.id
 
     if service_name not in AVAILABLE_NUMBERS or len(AVAILABLE_NUMBERS[service_name]) < 2:
-        await callback.answer("⚠️ Not enough numbers left for this service!", show_alert=True)
+        await callback.message.answer(
+            f"⚠️ <b>Out of Stock!</b> Not enough numbers available for <b>{service_name}</b>.",
+            parse_mode="HTML"
+        )
         return
 
-    assigned_1 = AVAILABLE_NUMBERS[service_name].pop(0)
-    assigned_2 = AVAILABLE_NUMBERS[service_name].pop(0)
+    try:
+        assigned_1 = AVAILABLE_NUMBERS[service_name].pop(0)
+        assigned_2 = AVAILABLE_NUMBERS[service_name].pop(0)
 
-    ASSIGNED_NUMBERS[assigned_1] = {"user_id": user_id, "service": service_name}
-    ASSIGNED_NUMBERS[assigned_2] = {"user_id": user_id, "service": service_name}
+        ASSIGNED_NUMBERS[assigned_1] = {"user_id": user_id, "service": service_name}
+        ASSIGNED_NUMBERS[assigned_2] = {"user_id": user_id, "service": service_name}
 
-    response = (
-        f"🌐 <b>2 Numbers Assigned Successfully!</b>\n\n"
-        f"🔹 <b>Service:</b> {service_name}\n"
-        f"📱 <b>Number 1:</b> <code>{assigned_1}</code>\n"
-        f"📱 <b>Number 2:</b> <code>{assigned_2}</code>\n\n"
-        f"⏳ <b>Waiting for OTPs...</b>\n"
-        f"💰 <b>Rate:</b> <code>${FLAT_OTP_RATE}</code> / OTP\n\n"
-        f"📢 <i>All incoming OTPs stream directly to our main group!</i>"
-    )
-    
-    await callback.answer()
-    await callback.message.answer(response, parse_mode="HTML")
+        response = (
+            f"🌐 <b>2 Numbers Assigned Successfully!</b>\n\n"
+            f"🔹 <b>Service:</b> {service_name}\n"
+            f"📱 <b>Number 1:</b> <code>{assigned_1}</code>\n"
+            f"📱 <b>Number 2:</b> <code>{assigned_2}</code>\n\n"
+            f"⏳ <b>Waiting for OTPs...</b>\n"
+            f"💰 <b>Rate:</b> <code>${FLAT_OTP_RATE}</code> / OTP\n\n"
+            f"📢 <i>All incoming OTPs stream directly to our main group!</i>"
+        )
+
+        await callback.message.answer(response, parse_mode="HTML")
+
+    except Exception as err:
+        print(f"[ERROR] Service selection failed: {err}")
+        await callback.message.answer("❌ An error occurred while assigning numbers. Please try again.")
 
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def live_traffic_handler(message: Message):
@@ -279,4 +288,4 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
-    
+        
