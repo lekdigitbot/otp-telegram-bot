@@ -30,7 +30,7 @@ dp = Dispatcher(storage=MemoryStorage())
 # =============================================================
 # DATABASE SETUP (SQLITE)
 # =============================================================
-DB_FILE = "bot_data.db"
+DB_FILE = "/tmp/bot_data.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE, timeout=10)
