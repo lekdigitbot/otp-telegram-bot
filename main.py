@@ -8,18 +8,26 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, F
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Update
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+    Update,
+)
 
 # =============================================================
 # CONFIGURATION
 # =============================================================
-BOT_TOKEN = "8815085413:AAEs9NQaPUQivyspR6Tcrts3Jr9PO6O61f0"                   # Replace with your Telegram Bot Token
+BOT_TOKEN = "8815085413:AAEs9NQaPUQivyspR6Tcrts3Jr9PO6O61f0"                  # Replace with your Telegram Bot Token
 RENDER_URL = "https://otp-telegram-bot-fpmp.onrender.com"
 
-ADMIN_ID = 7103520365                            # Your Telegram User ID
-TELEGRAM_GROUP_ID = -1004315686306               # Telegram Group ID
+ADMIN_ID = 7103520365                           # Your Telegram User ID
+TELEGRAM_GROUP_ID = -1004315686306              # Telegram Group ID
 
-THIRDWAVE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"        # Replace with your Thirdwave API Key
+THIRDWAVE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"       # Replace with your Thirdwave API Key
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
 FLAT_OTP_RATE = 0.003
@@ -27,8 +35,8 @@ FLAT_OTP_RATE = 0.003
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Shared HTTP Session
-http_session: aiohttp.ClientSession = None
+# Global HTTP Session (initialized during FastAPI lifespan)
+http_session = None
 
 # =============================================================
 # DATABASE SETUP (SQLITE)
@@ -254,6 +262,10 @@ async def process_service_selection(callback: CallbackQuery):
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def live_traffic_handler(message: Message):
     global http_session
+    if not http_session or http_session.closed:
+        await message.answer("⚠️ Server session starting up, please try again in a few seconds.", reply_markup=get_main_menu())
+        return
+
     headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "Accept": "application/json"}
     
     try:
@@ -350,8 +362,10 @@ async def poll_thirdwave_traffic():
 async def lifespan(app: FastAPI):
     global http_session
     http_session = aiohttp.ClientSession()
+    
     webhook_url = f"{RENDER_URL}/telegram-webhook"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)
+    
     polling_task = asyncio.create_task(poll_thirdwave_traffic())
     
     yield
