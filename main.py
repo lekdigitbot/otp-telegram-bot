@@ -13,7 +13,7 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKe
 # =============================================================
 # CONFIGURATION
 # =============================================================
-BOT_TOKEN = "8815085413:AAEs9NQaPUQivyspR6Tcrts3Jr9PO6O61f0."                   # Replace with your Telegram Bot Token
+BOT_TOKEN = "8815085413:AAEs9NQaPUQivyspR6Tcrts3Jr9PO6O61f0"                   # Replace with your Telegram Bot Token
 RENDER_URL = "https://otp-telegram-bot-fpmp.onrender.com"
 
 ADMIN_ID = 7103520365                            # Your Telegram User ID
@@ -26,6 +26,9 @@ FLAT_OTP_RATE = 0.003
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+# Shared HTTP Session
+http_session: aiohttp.ClientSession = None
 
 # =============================================================
 # DATABASE SETUP (SQLITE)
@@ -69,7 +72,7 @@ def db_add_stock(service: str, numbers: list):
             cursor.execute("INSERT INTO stock (service, phone_number) VALUES (?, ?)", (service, num))
             added_count += 1
         except sqlite3.IntegrityError:
-            pass  # Ignore duplicates
+            pass
     conn.commit()
     conn.close()
     return added_count
@@ -146,7 +149,7 @@ def get_main_menu():
     )
 
 # -------------------------------------------------------------
-# ADMIN HANDLER: ADD STOCK BY SERVICE
+# ADMIN HANDLER
 # -------------------------------------------------------------
 @dp.message(F.text.startswith("/addnumber"))
 async def add_number_admin(message: Message):
@@ -180,10 +183,7 @@ async def add_number_admin(message: Message):
 
     added_count = db_add_stock(service_name, new_numbers)
 
-    await message.answer(
-        f"✅ <b>Added {added_count} number(s) to {service_name}!</b>",
-        parse_mode="HTML"
-    )
+    await message.answer(f"✅ <b>Added {added_count} number(s) to {service_name}!</b>", parse_mode="HTML")
 
     group_announcement = (
         f"📢 <b>NEW STOCK UPDATE!</b> 📢\n\n"
@@ -197,7 +197,7 @@ async def add_number_admin(message: Message):
         print(f"[ERROR] Stock announcement failed: {err}")
 
 # -------------------------------------------------------------
-# USER HANDLERS & SERVICE SELECTION
+# USER HANDLERS
 # -------------------------------------------------------------
 @dp.message(F.text == "/start")
 async def start_handler(message: Message):
@@ -222,7 +222,7 @@ async def show_services_handler(message: Message):
 @dp.callback_query(F.data.startswith("srv:"))
 async def process_service_selection(callback: CallbackQuery):
     try:
-        await callback.answer()
+        await callback.answer("Processing request...")
     except Exception:
         pass
 
@@ -249,35 +249,34 @@ async def process_service_selection(callback: CallbackQuery):
         await callback.message.answer(response, parse_mode="HTML")
     except Exception as exc:
         print(f"[CALLBACK EXCEPTION] {exc}")
-        await callback.message.answer("❌ An internal error occurred while fetching numbers. Please try again.")
+        await callback.message.answer(f"❌ <b>Error processing request:</b> <code>{html.escape(str(exc))}</code>", parse_mode="HTML")
 
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def live_traffic_handler(message: Message):
+    global http_session
     headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "Accept": "application/json"}
     
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=5", headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    rows = data.get("rows", [])
-                    
-                    if rows:
-                        text = "🔴 <b>Recent 5 OTP Traffic:</b>\n\n"
-                        for item in rows[:5]:
-                            dest = html.escape(str(item.get("destinationNumber", "N/A")))
-                            body = html.escape(str(item.get("messageBody", "")))
-                            otp = html.escape(extract_otp_code(body, item.get("otp")))
-                            
-                            text += f"📱 <b>Num:</b> <code>{dest}</code>\n🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <code>{body[:40]}</code>\n───\n"
-                        await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
-                        return
-                    else:
-                        await message.answer("ℹ️ No recent traffic found.", reply_markup=get_main_menu())
-                        return
-                else:
-                    await message.answer(f"❌ <b>Traffic Error ({resp.status})</b>", reply_markup=get_main_menu(), parse_mode="HTML")
+        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=5", headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                rows = data.get("rows", [])
+                
+                if rows:
+                    text = "🔴 <b>Recent 5 OTP Traffic:</b>\n\n"
+                    for item in rows[:5]:
+                        dest = html.escape(str(item.get("destinationNumber", "N/A")))
+                        body = html.escape(str(item.get("messageBody", "")))
+                        otp = html.escape(extract_otp_code(body, item.get("otp")))
+                        text += f"📱 <b>Num:</b> <code>{dest}</code>\n🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <code>{body[:40]}</code>\n───\n"
+                    await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
                     return
+                else:
+                    await message.answer("ℹ️ No recent traffic found.", reply_markup=get_main_menu())
+                    return
+            else:
+                await message.answer(f"❌ <b>Traffic Error ({resp.status})</b>", reply_markup=get_main_menu(), parse_mode="HTML")
+                return
     except Exception as err:
         await message.answer(f"❌ <b>Connection Error:</b> <code>{html.escape(str(err))}</code>", parse_mode="HTML")
 
@@ -288,14 +287,15 @@ async def balance_handler(message: Message):
     await message.answer(f"👤 <b>User ID:</b> <code>{user_id}</code>\n💵 <b>Balance:</b> <code>${balance:.4f}</code>", parse_mode="HTML")
 
 # -------------------------------------------------------------
-# BACKGROUND WORKER: FORWARD ALL OTPS TO TELEGRAM GROUP
+# BACKGROUND WORKER
 # -------------------------------------------------------------
 async def poll_thirdwave_traffic():
+    global http_session
     headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}
     while True:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=15", headers=headers) as resp:
+            if http_session and not http_session.closed:
+                async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=15", headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         rows = data.get("rows", [])
@@ -315,7 +315,6 @@ async def poll_thirdwave_traffic():
                             safe_otp = html.escape(otp_code)
                             safe_body = html.escape(body)
 
-                            # 1. Forward to Telegram Group
                             group_msg = (
                                 f"🔥 <b>NEW OTP RECEIVED!</b> 🔥\n\n"
                                 f"📱 <b>Number:</b> <code>{safe_phone}</code>\n"
@@ -324,11 +323,9 @@ async def poll_thirdwave_traffic():
                             )
                             try:
                                 await bot.send_message(chat_id=TELEGRAM_GROUP_ID, text=group_msg, parse_mode="HTML")
-                                print(f"[SUCCESS] OTP dropped in Group {TELEGRAM_GROUP_ID}")
                             except Exception as group_err:
                                 print(f"[ERROR] Group Forwarding Failed: {group_err}")
 
-                            # 2. Direct message to assigned user
                             user_info = db_get_assigned_user(phone_number)
                             if user_info:
                                 u_id = user_info["user_id"]
@@ -347,16 +344,23 @@ async def poll_thirdwave_traffic():
         await asyncio.sleep(5)
 
 # -------------------------------------------------------------
-# FASTAPI WEB SERVER SETUP
+# FASTAPI LIFESPAN SETUP
 # -------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global http_session
+    http_session = aiohttp.ClientSession()
     webhook_url = f"{RENDER_URL}/telegram-webhook"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)
     polling_task = asyncio.create_task(poll_thirdwave_traffic())
+    
     yield
+    
     polling_task.cancel()
+    if http_session and not http_session.closed:
+        await http_session.close()
     await bot.delete_webhook()
+    await bot.session.close()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -371,3 +375,4 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
+    
