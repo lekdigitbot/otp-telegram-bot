@@ -35,7 +35,7 @@ FLAT_OTP_RATE = 0.003
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Global HTTP Session (initialized during FastAPI lifespan)
+# Session reference without immediate instantiation
 http_session = None
 
 # =============================================================
@@ -361,6 +361,7 @@ async def poll_thirdwave_traffic():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_session
+    # Session is created inside the async lifecycle loop
     http_session = aiohttp.ClientSession()
     
     webhook_url = f"{RENDER_URL}/telegram-webhook"
