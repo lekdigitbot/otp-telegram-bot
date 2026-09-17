@@ -35,7 +35,6 @@ FLAT_OTP_RATE = 0.003
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Global HTTP Session (managed safely inside lifespan)
 http_session = None
 
 # =============================================================
@@ -93,7 +92,7 @@ def db_add_stock(service: str, country: str, numbers: list):
 def db_get_services():
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
-    cursor.execute("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 3")
+    cursor.execute("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2")
     rows = cursor.fetchall()
     conn.close()
     return {row[0]: row[1] for row in rows}
@@ -102,27 +101,27 @@ def db_get_countries_for_service(service: str):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT country, COUNT(*) FROM stock WHERE service = ? GROUP BY country HAVING COUNT(*) >= 3",
+        "SELECT country, COUNT(*) FROM stock WHERE service = ? GROUP BY country HAVING COUNT(*) >= 2",
         (service,)
     )
     rows = cursor.fetchall()
     conn.close()
     return {row[0]: row[1] for row in rows}
 
-def db_assign_three_numbers(service: str, country: str, user_id: int):
+def db_assign_two_numbers(service: str, country: str, user_id: int):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT phone_number FROM stock WHERE service = ? AND country = ? LIMIT 3",
+        "SELECT phone_number FROM stock WHERE service = ? AND country = ? LIMIT 2",
         (service, country)
     )
     rows = cursor.fetchall()
     
-    if len(rows) < 3:
+    if len(rows) < 2:
         conn.close()
         return None
 
-    nums = [rows[0][0], rows[1][0], rows[2][0]]
+    nums = [rows[0][0], rows[1][0]]
     for num in nums:
         cursor.execute("DELETE FROM stock WHERE phone_number = ?", (num,))
         cursor.execute(
@@ -190,20 +189,19 @@ async def add_number_admin(message: Message):
         await message.answer("❌ <b>Unauthorized:</b> Admin only command.", parse_mode="HTML")
         return
 
-    text = message.text.strip()
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    raw_text = message.text.strip()
+    lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
     if not lines:
         return
 
-    first_line_parts = lines[0].split(maxsplit=3)
+    first_line_parts = lines[0].split(maxsplit=2)
     
     if len(first_line_parts) < 3:
         await message.answer(
             "⚠️ <b>Usage Format:</b>\n"
             "<code>/addnumber Bolt Nigeria\n"
             "2348052055633\n"
-            "2348052265099\n"
-            "2348052265100</code>",
+            "2348052265099</code>",
             parse_mode="HTML"
         )
         return
@@ -211,9 +209,6 @@ async def add_number_admin(message: Message):
     service_name = first_line_parts[1].capitalize()
     country_name = first_line_parts[2].capitalize()
     raw_numbers = []
-
-    if len(first_line_parts) > 3:
-        raw_numbers.extend(first_line_parts[3].split(","))
 
     if len(lines) > 1:
         for line in lines[1:]:
@@ -258,27 +253,28 @@ async def show_services_handler(message: Message):
 
     if not active_services:
         await message.answer(
-            "⚠️ <b>Out of Stock!</b> No service has at least 3 numbers available right now.",
+            "⚠️ <b>Out of Stock!</b> No service has at least 2 numbers available right now.\n"
+            "<i>(Admin needs to add stock using /addnumber Service Country)</i>",
             reply_markup=get_main_menu(),
             parse_mode="HTML"
         )
         return
 
     buttons = [
-        [InlineKeyboardButton(text=f"🔹 {srv} ({count} total)", callback_data=f"srv:{srv}")]
+        [InlineKeyboardButton(text=f"🔹 {srv} ({count} total)", callback_data=f"s_{srv}")]
         for srv, count in active_services.items()
     ]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer("📲 <b>Select a service:</b>", reply_markup=keyboard, parse_mode="HTML")
+    await message.answer("📲 <b>Select a service:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
 
-@dp.callback_query(F.data.startswith("srv:"))
+@dp.callback_query(F.data.startswith("s_"))
 async def process_service_selection(callback: CallbackQuery):
+    # Answer immediately to stop the white loading icon
     try:
         await callback.answer()
     except Exception:
         pass
 
-    service_name = callback.data.split("srv:", 1)[1]
+    service_name = callback.data[2:]
     countries = db_get_countries_for_service(service_name)
 
     if not countries:
@@ -286,42 +282,47 @@ async def process_service_selection(callback: CallbackQuery):
         return
 
     buttons = [
-        [InlineKeyboardButton(text=f"🌍 {cntry} ({count} in stock)", callback_data=f"get3:{service_name}:{cntry}")]
+        [InlineKeyboardButton(text=f"🌍 {cntry} ({count} available)", callback_data=f"c_{service_name}_{cntry}")]
         for cntry, count in countries.items()
     ]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     await callback.message.answer(
         f"🌍 <b>Select Country for {html.escape(service_name)}:</b>",
-        reply_markup=keyboard,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode="HTML"
     )
 
-@dp.callback_query(F.data.startswith("get3:"))
+@dp.callback_query(F.data.startswith("c_"))
 async def process_number_assignment(callback: CallbackQuery):
+    # Answer immediately to stop the white loading icon
     try:
-        await callback.answer("Assigning 3 numbers...")
+        await callback.answer("Assigning numbers...")
     except Exception:
         pass
 
-    _, service_name, country_name = callback.data.split(":", 2)
+    parts = callback.data.split("_", 2)
+    if len(parts) < 3:
+        await callback.message.answer("❌ Invalid request data.")
+        return
+
+    service_name = parts[1]
+    country_name = parts[2]
     user_id = callback.from_user.id
 
-    nums = db_assign_three_numbers(service_name, country_name, user_id)
+    nums = db_assign_two_numbers(service_name, country_name, user_id)
 
     if not nums:
         await callback.message.answer(
-            f"⚠️ <b>Out of Stock!</b> Need at least 3 numbers available for <b>{html.escape(service_name)} ({html.escape(country_name)})</b>.",
+            f"⚠️ <b>Out of Stock!</b> Need at least 2 numbers available for <b>{html.escape(service_name)} ({html.escape(country_name)})</b>.",
             parse_mode="HTML"
         )
         return
 
     response = (
-        f"🌐 <b>3 Numbers Assigned Successfully!</b>\n\n"
+        f"🌐 <b>2 Numbers Assigned Successfully!</b>\n\n"
         f"🔹 <b>Service:</b> {html.escape(service_name)}\n"
         f"🌍 <b>Country:</b> {html.escape(country_name)}\n"
         f"📱 <b>Number 1:</b> <code>{nums[0]}</code>\n"
-        f"📱 <b>Number 2:</b> <code>{nums[1]}</code>\n"
-        f"📱 <b>Number 3:</b> <code>{nums[2]}</code>\n\n"
+        f"📱 <b>Number 2:</b> <code>{nums[1]}</code>\n\n"
         f"⏳ <b>Waiting for OTPs...</b>\n"
         f"💰 <b>Rate:</b> <code>${FLAT_OTP_RATE}</code> / OTP\n\n"
         f"📢 <i>All incoming OTPs stream directly to our main group!</i>"
@@ -419,7 +420,7 @@ async def poll_thirdwave_traffic():
                                         text=f"🌐 <b>Your OTP Received ({srv} - {cntry})!</b>\n📱 <code>{safe_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
                                         parse_mode="HTML"
                                     )
-                                except Exception:
+                                meexcept Exception:
                                     pass
         except Exception as e:
             print(f"[WORKER ERROR] {e}")
@@ -459,3 +460,4 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
+                 
