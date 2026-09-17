@@ -27,8 +27,8 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # In-memory database structures
-AVAILABLE_NUMBERS = {}      # Format: {"WhatsApp": ["234701...", "234702..."]}
-ASSIGNED_NUMBERS = {}       # Format: {phone_number: {"user_id": 12345, "service": "WhatsApp"}}
+AVAILABLE_NUMBERS = {}      # Format: {"Bolt": ["2348052055633", ...]}
+ASSIGNED_NUMBERS = {}       # Format: {phone_number: {"user_id": 12345, "service": "Bolt"}}
 USER_BALANCES = {}          # Format: {user_id: balance}
 PROCESSED_OTPS = set()       # Processed OTP IDs
 
@@ -54,7 +54,7 @@ def get_main_menu():
     )
 
 # -------------------------------------------------------------
-# ADMIN HANDLER: ADD STOCK BY SERVICE
+# ADMIN HANDLER: ADD STOCK BY SERVICE (BULLETPROOF PARSER)
 # -------------------------------------------------------------
 @dp.message(F.text.startswith("/addnumber"))
 async def add_number_admin(message: Message):
@@ -62,27 +62,36 @@ async def add_number_admin(message: Message):
         await message.answer("❌ <b>Unauthorized:</b> Admin only command.", parse_mode="HTML")
         return
 
-    lines = message.text.strip().split("\n")
-    header_parts = lines[0].replace("/addnumber", "").strip().split(maxsplit=1)
+    text = message.text.strip()
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+
+    # First line contains /addnumber and the service name
+    first_line_parts = lines[0].split(maxsplit=2)
     
-    if not header_parts:
-        await message.answer("⚠️ <b>Usage:</b> <code>/addnumber Bolt 2348052278526, 2347010747834</code>", parse_mode="HTML")
+    if len(first_line_parts) < 2:
+        await message.answer(
+            "⚠️ <b>Usage:</b>\n<code>/addnumber Bolt\n2348052055633\n2348052265099</code>", 
+            parse_mode="HTML"
+        )
         return
 
-    service_name = header_parts[0].capitalize()
+    service_name = first_line_parts[1].capitalize()
     raw_numbers = []
 
-    if len(header_parts) > 1:
-        raw_numbers.extend(header_parts[1].split(","))
+    # Check if numbers were included on line 1 (e.g. /addnumber Bolt 23480..., 23480...)
+    if len(first_line_parts) > 2:
+        raw_numbers.extend(first_line_parts[2].split(","))
 
+    # Add numbers from all subsequent lines
     if len(lines) > 1:
         for line in lines[1:]:
             raw_numbers.extend(line.split(","))
 
-    new_numbers = [num.strip() for num in raw_numbers if num.strip()]
+    # Sanitize phone numbers to pure digits
+    new_numbers = [re.sub(r"\D", "", num) for num in raw_numbers if re.sub(r"\D", "", num)]
 
     if not new_numbers:
-        await message.answer("⚠️ No valid numbers found.", parse_mode="HTML")
+        await message.answer("⚠️ No valid phone numbers found in input.", parse_mode="HTML")
         return
 
     if service_name not in AVAILABLE_NUMBERS:
@@ -92,7 +101,7 @@ async def add_number_admin(message: Message):
 
     await message.answer(
         f"✅ <b>Added {len(new_numbers)} number(s) to {service_name}!</b>\n"
-        f"📦 <b>Total Stock:</b> <code>{len(AVAILABLE_NUMBERS[service_name])}</code>",
+        f"📦 <b>Total {service_name} Stock:</b> <code>{len(AVAILABLE_NUMBERS[service_name])}</code>",
         parse_mode="HTML"
     )
 
@@ -120,27 +129,31 @@ async def show_services_handler(message: Message):
     active_services = {srv: nums for srv, nums in AVAILABLE_NUMBERS.items() if len(nums) >= 2}
 
     if not active_services:
-        await message.answer("⚠️ <b>Out of Stock!</b> No services have at least 2 numbers available right now.", reply_markup=get_main_menu(), parse_mode="HTML")
+        await message.answer(
+            "⚠️ <b>Out of Stock!</b> No services have at least 2 numbers available right now.", 
+            reply_markup=get_main_menu(), 
+            parse_mode="HTML"
+        )
         return
 
     buttons = []
     for srv, nums in active_services.items():
-        buttons.append([InlineKeyboardButton(text=f"🔹 {srv} ({len(nums)} in stock)", callback_data=f"get_{srv}")])
+        buttons.append([InlineKeyboardButton(text=f"🔹 {srv} ({len(nums)} in stock)", callback_data=f"srv:{srv}")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     await message.answer("📲 <b>Select a service to get 2 numbers:</b>", reply_markup=keyboard, parse_mode="HTML")
 
-@dp.callback_query(F.data.startswith("get_"))
+@dp.callback_query(F.data.startswith("srv:"))
 async def process_service_selection(callback: CallbackQuery):
-    # Answer immediately to stop the loading spinner instantly
+    # Answer button event immediately to stop white spinner
     await callback.answer()
 
-    service_name = callback.data.replace("get_", "")
+    service_name = callback.data.split("srv:", 1)[1]
     user_id = callback.from_user.id
 
     if service_name not in AVAILABLE_NUMBERS or len(AVAILABLE_NUMBERS[service_name]) < 2:
         await callback.message.answer(
-            f"⚠️ <b>Out of Stock!</b> Not enough numbers available for <b>{service_name}</b>.",
+            f"⚠️ <b>Out of Stock!</b> Not enough numbers available for <b>{html.escape(service_name)}</b>.",
             parse_mode="HTML"
         )
         return
@@ -154,7 +167,7 @@ async def process_service_selection(callback: CallbackQuery):
 
         response = (
             f"🌐 <b>2 Numbers Assigned Successfully!</b>\n\n"
-            f"🔹 <b>Service:</b> {service_name}\n"
+            f"🔹 <b>Service:</b> {html.escape(service_name)}\n"
             f"📱 <b>Number 1:</b> <code>{assigned_1}</code>\n"
             f"📱 <b>Number 2:</b> <code>{assigned_2}</code>\n\n"
             f"⏳ <b>Waiting for OTPs...</b>\n"
@@ -288,4 +301,3 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
-        
