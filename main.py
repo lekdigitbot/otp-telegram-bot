@@ -35,7 +35,7 @@ FLAT_OTP_RATE = 0.003
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Session reference without immediate instantiation
+# Global HTTP Session (managed safely inside lifespan)
 http_session = None
 
 # =============================================================
@@ -50,6 +50,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS stock (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             service TEXT,
+            country TEXT,
             phone_number TEXT UNIQUE
         )
     """)
@@ -57,7 +58,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS assignments (
             phone_number TEXT PRIMARY KEY,
             user_id INTEGER,
-            service TEXT
+            service TEXT,
+            country TEXT
         )
     """)
     cursor.execute("""
@@ -71,13 +73,16 @@ def init_db():
 
 init_db()
 
-def db_add_stock(service: str, numbers: list):
+def db_add_stock(service: str, country: str, numbers: list):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
     added_count = 0
     for num in numbers:
         try:
-            cursor.execute("INSERT INTO stock (service, phone_number) VALUES (?, ?)", (service, num))
+            cursor.execute(
+                "INSERT INTO stock (service, country, phone_number) VALUES (?, ?, ?)",
+                (service, country, num)
+            )
             added_count += 1
         except sqlite3.IntegrityError:
             pass
@@ -88,25 +93,42 @@ def db_add_stock(service: str, numbers: list):
 def db_get_services():
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
-    cursor.execute("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2")
+    cursor.execute("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 3")
     rows = cursor.fetchall()
     conn.close()
     return {row[0]: row[1] for row in rows}
 
-def db_assign_two_numbers(service: str, user_id: int):
+def db_get_countries_for_service(service: str):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
-    cursor.execute("SELECT phone_number FROM stock WHERE service = ? LIMIT 2", (service,))
+    cursor.execute(
+        "SELECT country, COUNT(*) FROM stock WHERE service = ? GROUP BY country HAVING COUNT(*) >= 3",
+        (service,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return {row[0]: row[1] for row in rows}
+
+def db_assign_three_numbers(service: str, country: str, user_id: int):
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT phone_number FROM stock WHERE service = ? AND country = ? LIMIT 3",
+        (service, country)
+    )
     rows = cursor.fetchall()
     
-    if len(rows) < 2:
+    if len(rows) < 3:
         conn.close()
         return None
 
-    nums = [rows[0][0], rows[1][0]]
+    nums = [rows[0][0], rows[1][0], rows[2][0]]
     for num in nums:
         cursor.execute("DELETE FROM stock WHERE phone_number = ?", (num,))
-        cursor.execute("INSERT OR REPLACE INTO assignments (phone_number, user_id, service) VALUES (?, ?, ?)", (num, user_id, service))
+        cursor.execute(
+            "INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country) VALUES (?, ?, ?, ?)",
+            (num, user_id, service, country)
+        )
     
     conn.commit()
     conn.close()
@@ -115,17 +137,20 @@ def db_assign_two_numbers(service: str, user_id: int):
 def db_get_assigned_user(phone_number: str):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, service FROM assignments WHERE phone_number = ?", (phone_number,))
+    cursor.execute("SELECT user_id, service, country FROM assignments WHERE phone_number = ?", (phone_number,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {"user_id": row[0], "service": row[1]}
+        return {"user_id": row[0], "service": row[1], "country": row[2]}
     return None
 
 def db_add_balance(user_id: int, amount: float):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (user_id, amount, amount))
+    cursor.execute(
+        "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
+        (user_id, amount, amount)
+    )
     conn.commit()
     conn.close()
 
@@ -167,17 +192,28 @@ async def add_number_admin(message: Message):
 
     text = message.text.strip()
     lines = [line.strip() for line in text.split("\n") if line.strip()]
-    first_line_parts = lines[0].split(maxsplit=2)
+    if not lines:
+        return
+
+    first_line_parts = lines[0].split(maxsplit=3)
     
-    if len(first_line_parts) < 2:
-        await message.answer("⚠️ <b>Usage:</b>\n<code>/addnumber Bolt\n2348052055633\n2348052265099</code>", parse_mode="HTML")
+    if len(first_line_parts) < 3:
+        await message.answer(
+            "⚠️ <b>Usage Format:</b>\n"
+            "<code>/addnumber Bolt Nigeria\n"
+            "2348052055633\n"
+            "2348052265099\n"
+            "2348052265100</code>",
+            parse_mode="HTML"
+        )
         return
 
     service_name = first_line_parts[1].capitalize()
+    country_name = first_line_parts[2].capitalize()
     raw_numbers = []
 
-    if len(first_line_parts) > 2:
-        raw_numbers.extend(first_line_parts[2].split(","))
+    if len(first_line_parts) > 3:
+        raw_numbers.extend(first_line_parts[3].split(","))
 
     if len(lines) > 1:
         for line in lines[1:]:
@@ -189,13 +225,17 @@ async def add_number_admin(message: Message):
         await message.answer("⚠️ No valid phone numbers found in input.", parse_mode="HTML")
         return
 
-    added_count = db_add_stock(service_name, new_numbers)
+    added_count = db_add_stock(service_name, country_name, new_numbers)
 
-    await message.answer(f"✅ <b>Added {added_count} number(s) to {service_name}!</b>", parse_mode="HTML")
+    await message.answer(
+        f"✅ <b>Added {added_count} number(s) to {service_name} ({country_name})!</b>",
+        parse_mode="HTML"
+    )
 
     group_announcement = (
         f"📢 <b>NEW STOCK UPDATE!</b> 📢\n\n"
         f"🔹 <b>Service:</b> {service_name}\n"
+        f"🌍 <b>Country:</b> {country_name}\n"
         f"📱 <b>New Numbers Added:</b> <code>{added_count}</code>\n"
         f"🚀 <i>Press 'GET NUMBER' in bot to request your numbers!</i>"
     )
@@ -217,47 +257,76 @@ async def show_services_handler(message: Message):
     active_services = db_get_services()
 
     if not active_services:
-        await message.answer("⚠️ <b>Out of Stock!</b> No services have at least 2 numbers available right now.", reply_markup=get_main_menu(), parse_mode="HTML")
+        await message.answer(
+            "⚠️ <b>Out of Stock!</b> No service has at least 3 numbers available right now.",
+            reply_markup=get_main_menu(),
+            parse_mode="HTML"
+        )
         return
 
-    buttons = []
-    for srv, count in active_services.items():
-        buttons.append([InlineKeyboardButton(text=f"🔹 {srv} ({count} in stock)", callback_data=f"srv:{srv}")])
-
+    buttons = [
+        [InlineKeyboardButton(text=f"🔹 {srv} ({count} total)", callback_data=f"srv:{srv}")]
+        for srv, count in active_services.items()
+    ]
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer("📲 <b>Select a service to get 2 numbers:</b>", reply_markup=keyboard, parse_mode="HTML")
+    await message.answer("📲 <b>Select a service:</b>", reply_markup=keyboard, parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("srv:"))
 async def process_service_selection(callback: CallbackQuery):
     try:
-        await callback.answer("Processing request...")
+        await callback.answer()
     except Exception:
         pass
 
+    service_name = callback.data.split("srv:", 1)[1]
+    countries = db_get_countries_for_service(service_name)
+
+    if not countries:
+        await callback.message.answer(f"⚠️ Out of stock for <b>{html.escape(service_name)}</b>.", parse_mode="HTML")
+        return
+
+    buttons = [
+        [InlineKeyboardButton(text=f"🌍 {cntry} ({count} in stock)", callback_data=f"get3:{service_name}:{cntry}")]
+        for cntry, count in countries.items()
+    ]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.message.answer(
+        f"🌍 <b>Select Country for {html.escape(service_name)}:</b>",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("get3:"))
+async def process_number_assignment(callback: CallbackQuery):
     try:
-        service_name = callback.data.split("srv:", 1)[1]
-        user_id = callback.from_user.id
+        await callback.answer("Assigning 3 numbers...")
+    except Exception:
+        pass
 
-        nums = db_assign_two_numbers(service_name, user_id)
+    _, service_name, country_name = callback.data.split(":", 2)
+    user_id = callback.from_user.id
 
-        if not nums:
-            await callback.message.answer(f"⚠️ <b>Out of Stock!</b> Not enough numbers available for <b>{html.escape(service_name)}</b>.", parse_mode="HTML")
-            return
+    nums = db_assign_three_numbers(service_name, country_name, user_id)
 
-        response = (
-            f"🌐 <b>2 Numbers Assigned Successfully!</b>\n\n"
-            f"🔹 <b>Service:</b> {html.escape(service_name)}\n"
-            f"📱 <b>Number 1:</b> <code>{nums[0]}</code>\n"
-            f"📱 <b>Number 2:</b> <code>{nums[1]}</code>\n\n"
-            f"⏳ <b>Waiting for OTPs...</b>\n"
-            f"💰 <b>Rate:</b> <code>${FLAT_OTP_RATE}</code> / OTP\n\n"
-            f"📢 <i>All incoming OTPs stream directly to our main group!</i>"
+    if not nums:
+        await callback.message.answer(
+            f"⚠️ <b>Out of Stock!</b> Need at least 3 numbers available for <b>{html.escape(service_name)} ({html.escape(country_name)})</b>.",
+            parse_mode="HTML"
         )
+        return
 
-        await callback.message.answer(response, parse_mode="HTML")
-    except Exception as exc:
-        print(f"[CALLBACK EXCEPTION] {exc}")
-        await callback.message.answer(f"❌ <b>Error processing request:</b> <code>{html.escape(str(exc))}</code>", parse_mode="HTML")
+    response = (
+        f"🌐 <b>3 Numbers Assigned Successfully!</b>\n\n"
+        f"🔹 <b>Service:</b> {html.escape(service_name)}\n"
+        f"🌍 <b>Country:</b> {html.escape(country_name)}\n"
+        f"📱 <b>Number 1:</b> <code>{nums[0]}</code>\n"
+        f"📱 <b>Number 2:</b> <code>{nums[1]}</code>\n"
+        f"📱 <b>Number 3:</b> <code>{nums[2]}</code>\n\n"
+        f"⏳ <b>Waiting for OTPs...</b>\n"
+        f"💰 <b>Rate:</b> <code>${FLAT_OTP_RATE}</code> / OTP\n\n"
+        f"📢 <i>All incoming OTPs stream directly to our main group!</i>"
+    )
+    await callback.message.answer(response, parse_mode="HTML")
 
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def live_traffic_handler(message: Message):
@@ -342,11 +411,12 @@ async def poll_thirdwave_traffic():
                             if user_info:
                                 u_id = user_info["user_id"]
                                 srv = user_info["service"]
+                                cntry = user_info["country"]
                                 db_add_balance(u_id, FLAT_OTP_RATE)
                                 try:
                                     await bot.send_message(
                                         chat_id=u_id,
-                                        text=f"🌐 <b>Your OTP Received ({srv})!</b>\n📱 <code>{safe_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
+                                        text=f"🌐 <b>Your OTP Received ({srv} - {cntry})!</b>\n📱 <code>{safe_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
                                         parse_mode="HTML"
                                     )
                                 except Exception:
@@ -361,7 +431,6 @@ async def poll_thirdwave_traffic():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_session
-    # Session is created inside the async lifecycle loop
     http_session = aiohttp.ClientSession()
     
     webhook_url = f"{RENDER_URL}/telegram-webhook"
@@ -390,4 +459,3 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
-    
