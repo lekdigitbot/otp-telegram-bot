@@ -23,20 +23,19 @@ from aiogram.types import (
 # =============================================================
 # CONFIGURATION
 # =============================================================
-BOT_TOKEN = "8785747989:AAFNNyq_99EhUZwg5drc2e5rV7tnJn7QiTw"                  # Replace with your Telegram Bot Token
-RENDER_URL = "https://otp-telegram-bot-fpmp.onrender.com"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8785747989:AAFNNyq_99EhUZwg5drc2e5rV7tnJn7QiTw")
+RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
-ADMIN_ID = 7103520365                           # Your Telegram User ID
-TELEGRAM_GROUP_ID = -1004315686306              # Telegram Group ID
+ADMIN_ID = int(os.getenv("ADMIN_ID", 7103520365))
+TELEGRAM_GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID", -1004315686306))
 
-# Mandatory channels/groups to join
 REQUIRED_CHANNELS = [
-    {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/your_group_link"},
-    {"title": "Updates Channel 1", "chat_id": "-1004494412618", "link": "https://t.me/lekdigitaldiscussiongroup"},
-    {"title": "Updates Channel 2", "chat_id": "-1004437067843", "link": "https://t.me/lekdigitalbackupgroup"}
+    {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/lekotpzone"},
+    {"title": "Updates Channel 1", "chat_id": -1004494412618, "link": "https://t.me/lekdigitaldiscussiongroup"},
+    {"title": "Updates Channel 2", "chat_id": -1004437067843, "link": "https://t.me/lekdigitalbackupgroup"}
 ]
 
-THIRDWAVE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"       # Replace with your Thirdwave API Key
+THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY", "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416")
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
 FLAT_OTP_RATE = 0.003
@@ -44,8 +43,32 @@ MIN_WITHDRAWAL = 0.25
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-
 http_session = None
+
+# =============================================================
+# FASTAPI & LIFESPAN SETUP
+# =============================================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global http_session
+    http_session = aiohttp.ClientSession()
+    webhook_url = f"{RENDER_URL}/webhook"
+    await bot.set_webhook(webhook_url)
+    yield
+    await http_session.close()
+
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/")
+async def root():
+    return {"status": "bot is running"}
+
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = Update(**data)
+    await dp.feed_update(bot, update)
+    return {"status": "ok"}
 
 # =============================================================
 # FSM STATES FOR WITHDRAWAL
@@ -150,33 +173,6 @@ def db_assign_two_numbers(service: str, country: str, user_id: int):
     conn.close()
     return nums
 
-def db_get_assigned_user(phone_number: str):
-    conn = sqlite3.connect(DB_FILE, timeout=10)
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, service, country FROM assignments WHERE phone_number = ?", (phone_number,))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return {"user_id": row[0], "service": row[1], "country": row[2]}
-    return None
-
-def db_add_balance(user_id: int, amount: float):
-    conn = sqlite3.connect(DB_FILE, timeout=10)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
-        (user_id, amount, amount)
-    )
-    conn.commit()
-    conn.close()
-
-def db_deduct_balance(user_id: int, amount: float):
-    conn = sqlite3.connect(DB_FILE, timeout=10)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE balances SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
-    conn.close()
-
 def db_get_balance(user_id: int) -> float:
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
@@ -185,11 +181,16 @@ def db_get_balance(user_id: int) -> float:
     conn.close()
     return row[0] if row else 0.0
 
+def db_deduct_balance(user_id: int, amount: float):
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE balances SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
 # =============================================================
 # HELPER FUNCTIONS
 # =============================================================
-PROCESSED_OTPS = set()
-
 def mask_phone_number(num: str) -> str:
     clean = re.sub(r"\D", "", str(num))
     if len(clean) <= 6:
@@ -230,9 +231,9 @@ def get_force_sub_keyboard():
     buttons.append([InlineKeyboardButton(text="✅ Check Membership", callback_data="check_join")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# -------------------------------------------------------------
-# ADMIN HANDLER
-# -------------------------------------------------------------
+# =============================================================
+# HANDLERS
+# =============================================================
 @dp.message(F.text.startswith("/addnumber"))
 async def add_number_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -245,15 +246,8 @@ async def add_number_admin(message: Message):
         return
 
     first_line_parts = lines[0].split(maxsplit=2)
-    
     if len(first_line_parts) < 3:
-        await message.answer(
-            "⚠️ <b>Usage Format:</b>\n"
-            "<code>/addnumber Bolt Nigeria\n"
-            "2348052055633\n"
-            "2348052265099</code>",
-            parse_mode="HTML"
-        )
+        await message.answer("⚠️ Usage: <code>/addnumber Bolt Nigeria\n2348052055633</code>", parse_mode="HTML")
         return
 
     service_name = first_line_parts[1].capitalize()
@@ -265,46 +259,23 @@ async def add_number_admin(message: Message):
             raw_numbers.extend(line.split(","))
 
     new_numbers = [re.sub(r"\D", "", num) for num in raw_numbers if re.sub(r"\D", "", num)]
-
     if not new_numbers:
-        await message.answer("⚠️ No valid phone numbers found in input.", parse_mode="HTML")
+        await message.answer("⚠️ No valid phone numbers found.", parse_mode="HTML")
         return
 
     added_count = db_add_stock(service_name, country_name, new_numbers)
+    await message.answer(f"✅ Added {added_count} number(s) to {service_name} ({country_name})!", parse_mode="HTML")
 
-    await message.answer(
-        f"✅ <b>Added {added_count} number(s) to {service_name} ({country_name})!</b>",
-        parse_mode="HTML"
-    )
-
-    group_announcement = (
-        f"📢 <b>NEW STOCK UPDATE!</b> 📢\n\n"
-        f"🔹 <b>Service:</b> {service_name}\n"
-        f"🌍 <b>Country:</b> {country_name}\n"
-        f"📱 <b>New Numbers Added:</b> <code>{added_count}</code>\n"
-        f"🚀 <i>Press 'GET NUMBER' in bot to request your numbers!</i>"
-    )
-    try:
-        await bot.send_message(chat_id=TELEGRAM_GROUP_ID, text=group_announcement, parse_mode="HTML")
-    except Exception as err:
-        print(f"[ERROR] Stock announcement failed: {err}")
-
-# -------------------------------------------------------------
-# USER HANDLERS
-# -------------------------------------------------------------
 @dp.message(F.text == "/start")
 async def start_handler(message: Message):
     if not await check_user_joined_all(message.from_user.id):
         await message.answer(
-            "⚠️ <b>Access Denied!</b>\n"
-            "You must join all our mandatory channels and main group before using this bot:",
+            "⚠️ <b>Access Denied!</b> Join required channels first:",
             reply_markup=get_force_sub_keyboard(),
             parse_mode="HTML"
         )
         return
-
-    welcome_text = f"👋 Welcome <b>{message.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!"
-    await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="HTML")
+    await message.answer(f"👋 Welcome <b>{message.from_user.first_name}</b>!", reply_markup=get_main_menu(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "check_join")
 async def check_join_callback(callback: CallbackQuery):
@@ -314,9 +285,9 @@ async def check_join_callback(callback: CallbackQuery):
         pass
 
     if await check_user_joined_all(callback.from_user.id):
-        await callback.message.answer("✅ Thank you for joining! You now have full access.", reply_markup=get_main_menu())
+        await callback.message.answer("✅ Verified! Full access granted.", reply_markup=get_main_menu())
     else:
-        await callback.message.answer("❌ You still haven't joined all required channels/group.", reply_markup=get_force_sub_keyboard())
+        await callback.message.answer("❌ You haven't joined all required channels.", reply_markup=get_force_sub_keyboard())
 
 @dp.message(F.text == "📱 GET NUMBER")
 async def show_services_handler(message: Message):
@@ -325,20 +296,12 @@ async def show_services_handler(message: Message):
         return
 
     active_services = db_get_services()
-
     if not active_services:
-        await message.answer(
-            "⚠️ <b>Out of Stock!</b> No service has at least 2 numbers available right now.",
-            reply_markup=get_main_menu(),
-            parse_mode="HTML"
-        )
+        await message.answer("⚠️ Out of stock!", reply_markup=get_main_menu(), parse_mode="HTML")
         return
 
-    buttons = [
-        [InlineKeyboardButton(text=f"🔹 {srv} ({count} total)", callback_data=f"s_{srv}")]
-        for srv, count in active_services.items()
-    ]
-    await message.answer("📲 <b>Select a service:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
+    buttons = [[InlineKeyboardButton(text=f"🔹 {srv} ({count})", callback_data=f"s_{srv}")] for srv, count in active_services.items()]
+    await message.answer("📲 Select a service:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("s_"))
 async def process_service_selection(callback: CallbackQuery):
@@ -349,20 +312,12 @@ async def process_service_selection(callback: CallbackQuery):
 
     service_name = callback.data[2:]
     countries = db_get_countries_for_service(service_name)
-
     if not countries:
         await callback.message.answer(f"⚠️ Out of stock for <b>{html.escape(service_name)}</b>.", parse_mode="HTML")
         return
 
-    buttons = [
-        [InlineKeyboardButton(text=f"🌍 {cntry} ({count} available)", callback_data=f"c_{service_name}_{cntry}")]
-        for cntry, count in countries.items()
-    ]
-    await callback.message.answer(
-        f"🌍 <b>Select Country for {html.escape(service_name)}:</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode="HTML"
-    )
+    buttons = [[InlineKeyboardButton(text=f"🌍 {cntry} ({count})", callback_data=f"c_{service_name}_{cntry}")] for cntry, count in countries.items()]
+    await callback.message.answer(f"🌍 Select Country for {html.escape(service_name)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("c_"))
 async def process_number_assignment(callback: CallbackQuery):
@@ -373,31 +328,21 @@ async def process_number_assignment(callback: CallbackQuery):
 
     parts = callback.data.split("_", 2)
     if len(parts) < 3:
-        await callback.message.answer("❌ Invalid request data.")
         return
 
-    service_name = parts[1]
-    country_name = parts[2]
-    user_id = callback.from_user.id
-
-    nums = db_assign_two_numbers(service_name, country_name, user_id)
+    service_name, country_name = parts[1], parts[2]
+    nums = db_assign_two_numbers(service_name, country_name, callback.from_user.id)
 
     if not nums:
-        await callback.message.answer(
-            f"⚠️ <b>Out of Stock!</b> Need at least 2 numbers available for <b>{html.escape(service_name)} ({html.escape(country_name)})</b>.",
-            parse_mode="HTML"
-        )
+        await callback.message.answer("⚠️ Out of Stock!", parse_mode="HTML")
         return
 
     response = (
-        f"🌐 <b>2 Numbers Assigned Successfully!</b>\n\n"
+        f"🌐 <b>2 Numbers Assigned!</b>\n\n"
         f"🔹 <b>Service:</b> {html.escape(service_name)}\n"
         f"🌍 <b>Country:</b> {html.escape(country_name)}\n"
-        f"📱 <b>Number 1:</b> <code>{nums[0]}</code>\n"
-        f"📱 <b>Number 2:</b> <code>{nums[1]}</code>\n\n"
-        f"⏳ <b>Waiting for OTPs...</b>\n"
-        f"💰 <b>Rate:</b> <code>${FLAT_OTP_RATE}</code> / OTP\n\n"
-        f"📢 <i>All incoming OTPs stream directly to our main group!</i>"
+        f"📱 <b>Num 1:</b> <code>{nums[0]}</code>\n"
+        f"📱 <b>Num 2:</b> <code>{nums[1]}</code>"
     )
     await callback.message.answer(response, parse_mode="HTML")
 
@@ -405,70 +350,49 @@ async def process_number_assignment(callback: CallbackQuery):
 async def live_traffic_handler(message: Message):
     global http_session
     if not http_session or http_session.closed:
-        await message.answer("⚠️ Server session starting up, please try again in a few seconds.", reply_markup=get_main_menu())
+        await message.answer("⚠️ Session initializing, please try again.")
         return
 
     headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "Accept": "application/json"}
-    
     try:
         async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=5", headers=headers) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 rows = data.get("rows", [])
-                
                 if rows:
-                    text = "🔴 <b>Recent 5 OTP Traffic:</b>\n\n"
+                    text = "🔴 <b>Recent OTP Traffic:</b>\n\n"
                     for item in rows[:5]:
                         dest = mask_phone_number(item.get("destinationNumber", "N/A"))
                         body = html.escape(str(item.get("messageBody", "")))
                         otp = html.escape(extract_otp_code(body, item.get("otp")))
                         text += f"📱 <b>Num:</b> <code>{dest}</code>\n🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <code>{body[:40]}</code>\n───\n"
                     await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
-                    return
                 else:
                     await message.answer("ℹ️ No recent traffic found.", reply_markup=get_main_menu())
-                    return
             else:
-                await message.answer(f"❌ <b>Traffic Error ({resp.status})</b>", reply_markup=get_main_menu(), parse_mode="HTML")
-                return
+                await message.answer(f"❌ Error fetching traffic ({resp.status}).")
     except Exception as err:
-        await message.answer(f"❌ <b>Connection Error:</b> <code>{html.escape(str(err))}</code>", parse_mode="HTML")
+        await message.answer(f"❌ Connection error: <code>{html.escape(str(err))}</code>", parse_mode="HTML")
 
 @dp.message(F.text == "💰 BALANCE")
 async def balance_handler(message: Message):
-    user_id = message.from_user.id
-    balance = db_get_balance(user_id)
-    await message.answer(f"👤 <b>User ID:</b> <code>{user_id}</code>\n💵 <b>Balance:</b> <code>${balance:.4f}</code>", parse_mode="HTML")
+    bal = db_get_balance(message.from_user.id)
+    await message.answer(f"👤 <b>User ID:</b> <code>{message.from_user.id}</code>\n💵 <b>Balance:</b> <code>${bal:.4f}</code>", parse_mode="HTML")
 
-# -------------------------------------------------------------
-# WITHDRAWAL WORKFLOW
-# -------------------------------------------------------------
 @dp.message(F.text == "💸 WITHDRAW")
 async def withdraw_start(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    balance = db_get_balance(user_id)
-
+    balance = db_get_balance(message.from_user.id)
     if balance < MIN_WITHDRAWAL:
-        await message.answer(
-            f"❌ <b>Insufficient Balance!</b>\n"
-            f"Your current balance is <code>${balance:.4f}</code>.\n"
-            f"Minimum withdrawal amount is <code>${MIN_WITHDRAWAL}</code>.",
-            parse_mode="HTML"
-        )
+        await message.answer(f"❌ Minimum withdrawal is <code>${MIN_WITHDRAWAL}</code>. Current: <code>${balance:.4f}</code>", parse_mode="HTML")
         return
-
     await state.set_state(WithdrawalState.waiting_for_details)
-    await message.answer(
-        "🏦 <b>Please enter your Account Payment Details:</b>\n"
-        "<i>(e.g., Bank Name, Account Number, Account Name OR USDT Address)</i>",
-        parse_mode="HTML"
-    )
+    await message.answer("🏦 Enter payment details (Bank/USDT):", parse_mode="HTML")
 
 @dp.message(WithdrawalState.waiting_for_details)
 async def withdraw_details_received(message: Message, state: FSMContext):
     await state.update_data(details=message.text.strip())
     await state.set_state(WithdrawalState.waiting_for_amount)
-    await message.answer("💵 <b>Enter the amount you wish to withdraw ($):</b>\n<i>Minimum is $0.25</i>", parse_mode="HTML")
+    await message.answer("💵 Enter withdrawal amount ($):", parse_mode="HTML")
 
 @dp.message(WithdrawalState.waiting_for_amount)
 async def withdraw_amount_received(message: Message, state: FSMContext):
@@ -478,22 +402,18 @@ async def withdraw_amount_received(message: Message, state: FSMContext):
     try:
         amount = float(message.text.strip())
     except ValueError:
-        await message.answer("❌ Invalid amount format. Enter a number (e.g., 0.50):")
+        await message.answer("❌ Invalid amount format.")
         return
 
-    if amount < MIN_WITHDRAWAL:
-        await message.answer(f"❌ Amount below minimum limit of <code>${MIN_WITHDRAWAL}</code>. Try again:", parse_mode="HTML")
-        return
-
-    if amount > balance:
-        await message.answer(f"❌ Insufficient funds! Your balance is <code>${balance:.4f}</code>. Enter a valid amount:", parse_mode="HTML")
+    if amount < MIN_WITHDRAWAL or amount > balance:
+        await message.answer("❌ Invalid amount or insufficient balance.")
         return
 
     data = await state.get_data()
     details = data.get("details")
     await state.clear()
 
-    admin_keyboard = InlineKeyboardMarkup(
+    keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ Accept", callback_data=f"w_acc_{user_id}_{amount}"),
@@ -501,25 +421,13 @@ async def withdraw_amount_received(message: Message, state: FSMContext):
             ]
         ]
     )
-
-    admin_msg = (
-        f"🚨 <b>NEW WITHDRAWAL REQUEST!</b>\n\n"
-        f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
-        f"💵 <b>Amount:</b> <code>${amount:.4f}</code>\n"
-        f"🏦 <b>Details:</b> <code>{html.escape(details)}</code>"
-    )
-
+    admin_msg = f"🚨 <b>NEW WITHDRAWAL REQUEST</b>\nUser: <code>{user_id}</code>\nAmount: <code>${amount:.4f}</code>\nDetails: <code>{html.escape(details)}</code>"
+    
     try:
-        await bot.send_message(chat_id=ADMIN_ID, text=admin_msg, reply_markup=admin_keyboard, parse_mode="HTML")
-        await message.answer(
-            f"✅ <b>Withdrawal Request Submitted!</b>\n\n"
-            f"💵 <b>Amount:</b> <code>${amount:.4f}</code>\n"
-            f"⏳ Status: Pending Admin Approval.",
-            reply_markup=get_main_menu(),
-            parse_mode="HTML"
-        )
+        await bot.send_message(chat_id=ADMIN_ID, text=admin_msg, reply_markup=keyboard, parse_mode="HTML")
+        await message.answer("✅ Request submitted for approval.", reply_markup=get_main_menu())
     except Exception as err:
-        await message.answer(f"❌ Error submitting request: <code>{err}</code>", parse_mode="HTML")
+        await message.answer(f"❌ Error sending request: {err}")
 
 @dp.callback_query(F.data.startswith("w_"))
 async def handle_admin_withdrawal_response(callback: CallbackQuery):
@@ -528,16 +436,22 @@ async def handle_admin_withdrawal_response(callback: CallbackQuery):
         return
 
     parts = callback.data.split("_")
-    action = parts[1]
-    target_user_id = int(parts[2])
-    amount = float(parts[3])
+    action, target_user_id, amount = parts[1], int(parts[2]), float(parts[3])
 
     if action == "acc":
         current_bal = db_get_balance(target_user_id)
         if current_bal >= amount:
             db_deduct_balance(target_user_id, amount)
-            await callback.message.edit_text(callback.message.text + "\n\n✅ <b>Status: APPROVED AND PAID</b>", parse_mode="HTML")
+            await callback.message.edit_text(callback.message.text + "\n\n✅ <b>APPROVED AND PAID</b>", parse_mode="HTML")
             try:
-                await bot.send_message(
-                    chat_id=target_user_id,)
- 
+                await bot.send_message(chat_id=target_user_id, text=f"🎉 Your withdrawal request for <code>${amount:.4f}</code> was approved!")
+            except Exception:
+                pass
+        else:
+            await callback.message.edit_text(callback.message.text + "\n\n❌ <b>FAILED: Insufficient user balance</b>", parse_mode="HTML")
+    else:
+        await callback.message.edit_text(callback.message.text + "\n\n❌ <b>REJECTED</b>", parse_mode="HTML")
+        try:
+            await bot.send_message(chat_id=target_user_id, text=f"❌ Your withdrawal request for <code>${amount:.4f}</code> was rejected.")
+        except Exception:
+            pass
