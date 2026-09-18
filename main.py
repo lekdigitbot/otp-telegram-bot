@@ -21,7 +21,7 @@ from aiogram.types import (
 # =============================================================
 # CONFIGURATION
 # =============================================================
-BOT_TOKEN = "8815085413:AAEs9NQaPUQivyspR6Tcrts3Jr9PO6O61f0"                  # Replace with your Telegram Bot Token
+BOT_TOKEN = "8785747989:AAFNNyq_99EhUZwg5drc2e5rV7tnJn7QiTw"                  # Replace with your Telegram Bot Token
 RENDER_URL = "https://otp-telegram-bot-fpmp.onrender.com"
 
 ADMIN_ID = 7103520365                           # Your Telegram User ID
