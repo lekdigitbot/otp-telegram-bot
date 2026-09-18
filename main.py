@@ -1,4 +1,4 @@
-import os
+lekdigitaldiscussionzone os
 import re
 import asyncio
 import aiohttp
@@ -32,8 +32,8 @@ TELEGRAM_GROUP_ID = -1004315686306              # Telegram Group ID
 # Mandatory channels/groups to join
 REQUIRED_CHANNELS = [
     {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/lekotpzone"},
-    {"title": "Updates Channel 1", "chat_id": "@your_channel_1", "link": "https://t.me/lekdigitaldiscussionzone"},
-    {"title": "Updates Channel 2", "chat_id": "@your_channel_2", "link": "https://t.me/lekdigitalbackupzone"}
+    {"title": "Updates Channel 1", "chat_id": "-1004494412618", "link": "https://t.me/lekdigitaldiscustiongroup"},
+    {"title": "Updates Channel 2", "chat_id": "-1004437067843", "link": "https://t.me/lekdigitalbackupgroup"}
 ]
 
 THIRDWAVE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"       # Replace with your Thirdwave API Key
