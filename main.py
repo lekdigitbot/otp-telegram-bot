@@ -30,7 +30,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 7103520365))
 TELEGRAM_GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID", -1004315686306))
 
 REQUIRED_CHANNELS = [
-    {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/your_group_link"},
+    {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/lekotpzone"},
     {"title": "Updates Channel 1", "chat_id": -1004494412618, "link": "https://t.me/lekdigitaldiscussiongroup"},
     {"title": "Updates Channel 2", "chat_id": -1004437067843, "link": "https://t.me/lekdigitalbackupgroup"}
 ]
