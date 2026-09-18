@@ -32,7 +32,7 @@ TELEGRAM_GROUP_ID = -1004315686306              # Telegram Group ID
 # Mandatory channels/groups to join
 REQUIRED_CHANNELS = [
     {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/lekotpzone"},
-    {"title": "Updates Channel 1", "chat_id": -1004494412618, "link": "https://t.me/lekdigitaldiscustiongroup"},
+    {"title": "Updates Channel 1", "chat_id": -1004494412618, "link": "https://t.me/lekdigitaldiscussiongroup"},
     {"title": "Updates Channel 2", "chat_id": -1004437067843, "link": "https://t.me/lekdigitalbackupgroup"}
 ]
 
