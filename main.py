@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, F
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
@@ -27,15 +29,30 @@ RENDER_URL = "https://otp-telegram-bot-fpmp.onrender.com"
 ADMIN_ID = 7103520365                           # Your Telegram User ID
 TELEGRAM_GROUP_ID = -1004315686306              # Telegram Group ID
 
+# Mandatory channels/groups to join
+REQUIRED_CHANNELS = [
+    {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/lekotpzone"},
+    {"title": "Updates Channel 1", "chat_id": "@your_channel_1", "link": "https://t.me/lekdigitaldiscussionzone"},
+    {"title": "Updates Channel 2", "chat_id": "@your_channel_2", "link": "https://t.me/lekdigitalbackupzone"}
+]
+
 THIRDWAVE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"       # Replace with your Thirdwave API Key
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
 FLAT_OTP_RATE = 0.003
+MIN_WITHDRAWAL = 0.25
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 http_session = None
+
+# =============================================================
+# FSM STATES FOR WITHDRAWAL
+# =============================================================
+class WithdrawalState(StatesGroup):
+    waiting_for_details = State()
+    waiting_for_amount = State()
 
 # =============================================================
 # DATABASE SETUP (SQLITE)
@@ -153,6 +170,13 @@ def db_add_balance(user_id: int, amount: float):
     conn.commit()
     conn.close()
 
+def db_deduct_balance(user_id: int, amount: float):
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE balances SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
 def db_get_balance(user_id: int) -> float:
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
@@ -161,7 +185,16 @@ def db_get_balance(user_id: int) -> float:
     conn.close()
     return row[0] if row else 0.0
 
+# =============================================================
+# HELPER FUNCTIONS
+# =============================================================
 PROCESSED_OTPS = set()
+
+def mask_phone_number(num: str) -> str:
+    clean = re.sub(r"\D", "", str(num))
+    if len(clean) <= 6:
+        return clean
+    return f"{clean[:5]}****{clean[-3:]}"
 
 def extract_otp_code(body: str, fallback_otp: str = "") -> str:
     if fallback_otp and str(fallback_otp).strip() and str(fallback_otp) != "None":
@@ -179,6 +212,23 @@ def get_main_menu():
         ],
         resize_keyboard=True
     )
+
+async def check_user_joined_all(user_id: int) -> bool:
+    for ch in REQUIRED_CHANNELS:
+        try:
+            member = await bot.get_chat_member(chat_id=ch["chat_id"], user_id=user_id)
+            if member.status in ["left", "kicked"]:
+                return False
+        except Exception:
+            return False
+    return True
+
+def get_force_sub_keyboard():
+    buttons = []
+    for ch in REQUIRED_CHANNELS:
+        buttons.append([InlineKeyboardButton(text=f"📢 Join {ch['title']}", url=ch["link"])])
+    buttons.append([InlineKeyboardButton(text="✅ Check Membership", callback_data="check_join")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # -------------------------------------------------------------
 # ADMIN HANDLER
@@ -244,17 +294,41 @@ async def add_number_admin(message: Message):
 # -------------------------------------------------------------
 @dp.message(F.text == "/start")
 async def start_handler(message: Message):
+    if not await check_user_joined_all(message.from_user.id):
+        await message.answer(
+            "⚠️ <b>Access Denied!</b>\n"
+            "You must join all our mandatory channels and main group before using this bot:",
+            reply_markup=get_force_sub_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
     welcome_text = f"👋 Welcome <b>{message.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!"
     await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="HTML")
 
+@dp.callback_query(F.data == "check_join")
+async def check_join_callback(callback: CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
+    if await check_user_joined_all(callback.from_user.id):
+        await callback.message.answer("✅ Thank you for joining! You now have full access.", reply_markup=get_main_menu())
+    else:
+        await callback.message.answer("❌ You still haven't joined all required channels/group.", reply_markup=get_force_sub_keyboard())
+
 @dp.message(F.text == "📱 GET NUMBER")
 async def show_services_handler(message: Message):
+    if not await check_user_joined_all(message.from_user.id):
+        await message.answer("⚠️ Please join our channels to access stock.", reply_markup=get_force_sub_keyboard())
+        return
+
     active_services = db_get_services()
 
     if not active_services:
         await message.answer(
-            "⚠️ <b>Out of Stock!</b> No service has at least 2 numbers available right now.\n"
-            "<i>(Admin needs to add stock using /addnumber Service Country)</i>",
+            "⚠️ <b>Out of Stock!</b> No service has at least 2 numbers available right now.",
             reply_markup=get_main_menu(),
             parse_mode="HTML"
         )
@@ -345,7 +419,7 @@ async def live_traffic_handler(message: Message):
                 if rows:
                     text = "🔴 <b>Recent 5 OTP Traffic:</b>\n\n"
                     for item in rows[:5]:
-                        dest = html.escape(str(item.get("destinationNumber", "N/A")))
+                        dest = mask_phone_number(item.get("destinationNumber", "N/A"))
                         body = html.escape(str(item.get("messageBody", "")))
                         otp = html.escape(extract_otp_code(body, item.get("otp")))
                         text += f"📱 <b>Num:</b> <code>{dest}</code>\n🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <code>{body[:40]}</code>\n───\n"
@@ -367,95 +441,103 @@ async def balance_handler(message: Message):
     await message.answer(f"👤 <b>User ID:</b> <code>{user_id}</code>\n💵 <b>Balance:</b> <code>${balance:.4f}</code>", parse_mode="HTML")
 
 # -------------------------------------------------------------
-# BACKGROUND WORKER
+# WITHDRAWAL WORKFLOW
 # -------------------------------------------------------------
-async def poll_thirdwave_traffic():
-    global http_session
-    headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}
-    while True:
-        try:
-            if http_session and not http_session.closed:
-                async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=15", headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        rows = data.get("rows", [])
-                        
-                        for item in rows:
-                            msg_id = item.get("id")
-                            if msg_id in PROCESSED_OTPS:
-                                continue
+@dp.message(F.text == "💸 WITHDRAW")
+async def withdraw_start(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    balance = db_get_balance(user_id)
 
-                            phone_number = str(item.get("destinationNumber", "")).strip()
-                            body = str(item.get("messageBody", ""))
-                            otp_code = extract_otp_code(body, item.get("otp"))
+    if balance < MIN_WITHDRAWAL:
+        await message.answer(
+            f"❌ <b>Insufficient Balance!</b>\n"
+            f"Your current balance is <code>${balance:.4f}</code>.\n"
+            f"Minimum withdrawal amount is <code>${MIN_WITHDRAWAL}</code>.",
+            parse_mode="HTML"
+        )
+        return
 
-                            PROCESSED_OTPS.add(msg_id)
+    await state.set_state(WithdrawalState.waiting_for_details)
+    await message.answer(
+        "🏦 <b>Please enter your Account Payment Details:</b>\n"
+        "<i>(e.g., Bank Name, Account Number, Account Name OR USDT Address)</i>",
+        parse_mode="HTML"
+    )
 
-                            safe_phone = html.escape(phone_number)
-                            safe_otp = html.escape(otp_code)
-                            safe_body = html.escape(body)
+@dp.message(WithdrawalState.waiting_for_details)
+async def withdraw_details_received(message: Message, state: FSMContext):
+    await state.update_data(details=message.text.strip())
+    await state.set_state(WithdrawalState.waiting_for_amount)
+    await message.answer("💵 <b>Enter the amount you wish to withdraw ($):</b>\n<i>Minimum is $0.25</i>", parse_mode="HTML")
 
-                            group_msg = (
-                                f"🔥 <b>NEW OTP RECEIVED!</b> 🔥\n\n"
-                                f"📱 <b>Number:</b> <code>{safe_phone}</code>\n"
-                                f"🔑 <b>OTP Code:</b> <code>{safe_otp}</code>\n"
-                                f"💬 <b>Message:</b> <code>{safe_body}</code>"
-                            )
-                            try:
-                                await bot.send_message(chat_id=TELEGRAM_GROUP_ID, text=group_msg, parse_mode="HTML")
-                            except Exception as group_err:
-                                print(f"[ERROR] Group Forwarding Failed: {group_err}")
+@dp.message(WithdrawalState.waiting_for_amount)
+async def withdraw_amount_received(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    balance = db_get_balance(user_id)
 
-                            user_info = db_get_assigned_user(phone_number)
-                            if user_info:
-                                u_id = user_info["user_id"]
-                                srv = user_info["service"]
-                                cntry = user_info["country"]
-                                db_add_balance(u_id, FLAT_OTP_RATE)
-                                try:
-                                    await bot.send_message(
-                                        chat_id=u_id,
-                                        text=f"🌐 <b>Your OTP Received ({srv} - {cntry})!</b>\n📱 <code>{safe_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
-                                        parse_mode="HTML"
-                                    )
-                                except Exception:
-                                    pass
-        except Exception as e:
-            print(f"[WORKER ERROR] {e}")
-        await asyncio.sleep(5)
+    try:
+        amount = float(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Invalid amount format. Enter a number (e.g., 0.50):")
+        return
 
-# -------------------------------------------------------------
-# FASTAPI LIFESPAN SETUP
-# -------------------------------------------------------------
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global http_session
-    http_session = aiohttp.ClientSession()
-    
-    webhook_url = f"{RENDER_URL}/telegram-webhook"
-    await bot.set_webhook(webhook_url, drop_pending_updates=True)
-    
-    polling_task = asyncio.create_task(poll_thirdwave_traffic())
-    
-    yield
-    
-    polling_task.cancel()
-    if http_session and not http_session.closed:
-        await http_session.close()
-    await bot.delete_webhook()
-    await bot.session.close()
+    if amount < MIN_WITHDRAWAL:
+        await message.answer(f"❌ Amount below minimum limit of <code>${MIN_WITHDRAWAL}</code>. Try again:", parse_mode="HTML")
+        return
 
-app = FastAPI(lifespan=lifespan)
+    if amount > balance:
+        await message.answer(f"❌ Insufficient funds! Your balance is <code>${balance:.4f}</code>. Enter a valid amount:", parse_mode="HTML")
+        return
 
-@app.post("/")
-@app.post("/telegram-webhook")
-async def process_telegram_update(request: Request):
-    data = await request.json()
-    update = Update.model_validate(data, context={"bot": bot})
-    await dp.feed_update(bot, update)
-    return {"status": "ok"}
+    data = await state.get_data()
+    details = data.get("details")
+    await state.clear()
 
-@app.get("/")
-async def health_check():
-    return {"status": "bot is running"}
-    
+    admin_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Accept", callback_data=f"w_acc_{user_id}_{amount}"),
+                InlineKeyboardButton(text="❌ Reject", callback_data=f"w_rej_{user_id}_{amount}")
+            ]
+        ]
+    )
+
+    admin_msg = (
+        f"🚨 <b>NEW WITHDRAWAL REQUEST!</b>\n\n"
+        f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"💵 <b>Amount:</b> <code>${amount:.4f}</code>\n"
+        f"🏦 <b>Details:</b> <code>{html.escape(details)}</code>"
+    )
+
+    try:
+        await bot.send_message(chat_id=ADMIN_ID, text=admin_msg, reply_markup=admin_keyboard, parse_mode="HTML")
+        await message.answer(
+            f"✅ <b>Withdrawal Request Submitted!</b>\n\n"
+            f"💵 <b>Amount:</b> <code>${amount:.4f}</code>\n"
+            f"⏳ Status: Pending Admin Approval.",
+            reply_markup=get_main_menu(),
+            parse_mode="HTML"
+        )
+    except Exception as err:
+        await message.answer(f"❌ Error submitting request: <code>{err}</code>", parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("w_"))
+async def handle_admin_withdrawal_response(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Unauthorized!", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    action = parts[1]
+    target_user_id = int(parts[2])
+    amount = float(parts[3])
+
+    if action == "acc":
+        current_bal = db_get_balance(target_user_id)
+        if current_bal >= amount:
+            db_deduct_balance(target_user_id, amount)
+            await callback.message.edit_text(callback.message.text + "\n\n✅ <b>Status: APPROVED AND PAID</b>", parse_mode="HTML")
+            try:
+                await bot.send_message(
+                    chat_id=target_user_id,
+ 
