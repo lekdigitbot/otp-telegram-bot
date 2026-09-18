@@ -23,16 +23,16 @@ from aiogram.types import (
 # =============================================================
 # CONFIGURATION
 # =============================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8785747989:AAFNNyq_99EhUZwg5drc2e5rV7tnJn7QiTw")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8785747989:AAFYjGrfhk4N-UGhf-WzhTLRf8_y08wsTh4")
 RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", 7103520365))
 TELEGRAM_GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID", -1004315686306))
 
 REQUIRED_CHANNELS = [
-    {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/lekotpzone"},
+    {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/your_group_link"},
     {"title": "Updates Channel 1", "chat_id": -1004494412618, "link": "https://t.me/lekdigitaldiscussiongroup"},
-    {"title": "Updates Channel 2", "chat_id": -1004437067843, "link": "https://t.me/lekditalbackupgroup"}
+    {"title": "Updates Channel 2", "chat_id": -1004437067843, "link": "https://t.me/lekdigitalbackupgroup"}
 ]
 
 THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY", "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416")
@@ -455,3 +455,4 @@ async def handle_admin_withdrawal_response(callback: CallbackQuery):
             await bot.send_message(chat_id=target_user_id, text=f"❌ Your withdrawal request for <code>${amount:.4f}</code> was rejected.")
         except Exception:
             pass
+        
