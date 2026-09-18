@@ -268,7 +268,6 @@ async def show_services_handler(message: Message):
 
 @dp.callback_query(F.data.startswith("s_"))
 async def process_service_selection(callback: CallbackQuery):
-    # Answer immediately to stop the white loading icon
     try:
         await callback.answer()
     except Exception:
@@ -293,7 +292,6 @@ async def process_service_selection(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("c_"))
 async def process_number_assignment(callback: CallbackQuery):
-    # Answer immediately to stop the white loading icon
     try:
         await callback.answer("Assigning numbers...")
     except Exception:
@@ -420,7 +418,7 @@ async def poll_thirdwave_traffic():
                                         text=f"🌐 <b>Your OTP Received ({srv} - {cntry})!</b>\n📱 <code>{safe_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
                                         parse_mode="HTML"
                                     )
-                                meexcept Exception:
+                                except Exception:
                                     pass
         except Exception as e:
             print(f"[WORKER ERROR] {e}")
@@ -460,4 +458,4 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
-                 
+    
