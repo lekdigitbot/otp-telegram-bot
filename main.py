@@ -47,6 +47,31 @@ dp = Dispatcher(storage=MemoryStorage())
 http_session = None
 
 # =============================================================
+# FASTAPI & LIFESPAN SETUP
+# =============================================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global http_session
+    http_session = aiohttp.ClientSession()
+    webhook_url = f"{RENDER_URL}/webhook"
+    await bot.set_webhook(webhook_url)
+    yield
+    await http_session.close()
+
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/")
+async def root():
+    return {"status": "bot is running"}
+
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = Update(**data)
+    await dp.feed_update(bot, update)
+    return {"status": "ok"}
+
+# =============================================================
 # FSM STATES FOR WITHDRAWAL
 # =============================================================
 class WithdrawalState(StatesGroup):
@@ -525,17 +550,4 @@ async def handle_admin_withdrawal_response(callback: CallbackQuery):
         current_bal = db_get_balance(target_user_id)
         if current_bal >= amount:
             db_deduct_balance(target_user_id, amount)
-            await callback.message.edit_text(callback.message.text + "\n\n✅ <b>Status: APPROVED AND PAID</b>", parse_mode="HTML")
-            try:
-                await bot.send_message(
-                    chat_id=target_user_id,
-                    text=f"🎉 <b>Withdrawal Approved!</b>\nYour payment of <code>${amount:.4f}</code> has been processed.",
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-        else:
-            await callback.message.answer("❌ User balance is now insufficient to satisfy this request.")
-    elif action == "rej":
-        await callback.message.edit_text(callback.message.text + "\n\n❌ <b>Status: REJECTED</b>", parse_mode="HTML")
- 
+            await callb
