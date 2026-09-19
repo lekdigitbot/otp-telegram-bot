@@ -27,12 +27,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8785747989:AAFYjGrfhk4N-UGhf-WzhTLRf8_y08wsT
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
 ADMIN_ID = 7103520365
-TELEGRAM_GROUP_ID = -1004315686306
+TELEGRAM_GROUP_ID = -1004315686306  # Must start with -100 for supergroups
 
 REQUIRED_CHANNELS = [
-    {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/lekotpzone"},
-    {"title": "Updates Channel 1", "chat_id": "-1004494412618", "link": "https://t.me/lekdigitaldiscussiongroup"},
-    {"title": "Updates Channel 2", "chat_id": "-1004437067843", "link": "https://t.me/lekdigitalbackupgroup"}
+    {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/your_group_link"},
+    {"title": "Updates Channel 1", "chat_id": "@your_channel_1", "link": "https://t.me/your_channel_1"},
+    {"title": "Updates Channel 2", "chat_id": "@your_channel_2", "link": "https://t.me/your_channel_2"}
 ]
 
 THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY", "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416")
@@ -45,31 +45,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 http_session = None
-
-# =============================================================
-# FASTAPI & LIFESPAN SETUP
-# =============================================================
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global http_session
-    http_session = aiohttp.ClientSession()
-    webhook_url = f"{RENDER_URL}/webhook"
-    await bot.set_webhook(webhook_url)
-    yield
-    await http_session.close()
-
-app = FastAPI(lifespan=lifespan)
-
-@app.get("/")
-async def root():
-    return {"status": "bot is running"}
-
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    data = await request.json()
-    update = Update(**data)
-    await dp.feed_update(bot, update)
-    return {"status": "ok"}
 
 # =============================================================
 # FSM STATES FOR WITHDRAWAL
@@ -550,4 +525,16 @@ async def handle_admin_withdrawal_response(callback: CallbackQuery):
         current_bal = db_get_balance(target_user_id)
         if current_bal >= amount:
             db_deduct_balance(target_user_id, amount)
-            await callb
+            await callback.message.edit_text(callback.message.text + "\n\n✅ <b>Status: APPROVED AND PAID</b>", parse_mode="HTML")
+            try:
+                await bot.send_message(
+                    chat_id=target_user_id,
+                    text=f"🎉 <b>Withdrawal Approved!</b>\nYour payment of <code>${amount:.4f}</code> has been processed.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+        else:
+            await callback.message.answer("❌ User balance is now insufficient to satisfy this request.")
+    elif action == "rej":
+        await callback.message.edit_text(callback.message.text + "\n\n❌ <b>Sta
