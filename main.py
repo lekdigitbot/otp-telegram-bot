@@ -23,20 +23,19 @@ from aiogram.types import (
 # =============================================================
 # CONFIGURATION
 # =============================================================
-BOT_TOKEN = "8785747989:AAFYjGrfhk4N-UGhf-WzhTLRf8_y08wsTh4"                  # Replace with your Telegram Bot Token
-RENDER_URL = "https://otp-telegram-bot-fpmp.onrender.com"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8785747989:AAFYjGrfhk4N-UGhf-WzhTLRf8_y08wsTh4")
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
-ADMIN_ID = 7103520365                           # Your Telegram User ID
-TELEGRAM_GROUP_ID = -1004315686306              # Telegram Group ID
+ADMIN_ID = 7103520365
+TELEGRAM_GROUP_ID = -1004315686306
 
-# Mandatory channels/groups to join
 REQUIRED_CHANNELS = [
     {"title": "Main Group", "chat_id": -1004315686306, "link": "https://t.me/lekotpzone"},
     {"title": "Updates Channel 1", "chat_id": "-1004494412618", "link": "https://t.me/lekdigitaldiscussiongroup"},
     {"title": "Updates Channel 2", "chat_id": "-1004437067843", "link": "https://t.me/lekdigitalbackupgroup"}
 ]
 
-THIRDWAVE_API_KEY = "8785747989:AAFYjGrfhk4N-UGhf-WzhTLRf8_y08wsTh4"       # Replace with your Thirdwave API Key
+THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY", "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416")
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
 FLAT_OTP_RATE = 0.003
@@ -199,7 +198,7 @@ def mask_phone_number(num: str) -> str:
 def extract_otp_code(body: str, fallback_otp: str = "") -> str:
     if fallback_otp and str(fallback_otp).strip() and str(fallback_otp) != "None":
         return str(fallback_otp).strip()
-    match = re.search(r'\b\d{4,8}\b', body)
+    match = re.search(r"\b\d{4,8}\b", body)
     return match.group(0) if match else "No Code"
 
 def get_main_menu():
@@ -230,9 +229,9 @@ def get_force_sub_keyboard():
     buttons.append([InlineKeyboardButton(text="✅ Check Membership", callback_data="check_join")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# -------------------------------------------------------------
-# ADMIN HANDLER
-# -------------------------------------------------------------
+# =============================================================
+# TELEGRAM HANDLERS
+# =============================================================
 @dp.message(F.text.startswith("/addnumber"))
 async def add_number_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -245,7 +244,6 @@ async def add_number_admin(message: Message):
         return
 
     first_line_parts = lines[0].split(maxsplit=2)
-    
     if len(first_line_parts) < 3:
         await message.answer(
             "⚠️ <b>Usage Format:</b>\n"
@@ -289,9 +287,6 @@ async def add_number_admin(message: Message):
     except Exception as err:
         print(f"[ERROR] Stock announcement failed: {err}")
 
-# -------------------------------------------------------------
-# USER HANDLERS
-# -------------------------------------------------------------
 @dp.message(F.text == "/start")
 async def start_handler(message: Message):
     if not await check_user_joined_all(message.from_user.id):
@@ -424,13 +419,10 @@ async def live_traffic_handler(message: Message):
                         otp = html.escape(extract_otp_code(body, item.get("otp")))
                         text += f"📱 <b>Num:</b> <code>{dest}</code>\n🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <code>{body[:40]}</code>\n───\n"
                     await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
-                    return
                 else:
                     await message.answer("ℹ️ No recent traffic found.", reply_markup=get_main_menu())
-                    return
             else:
                 await message.answer(f"❌ <b>Traffic Error ({resp.status})</b>", reply_markup=get_main_menu(), parse_mode="HTML")
-                return
     except Exception as err:
         await message.answer(f"❌ <b>Connection Error:</b> <code>{html.escape(str(err))}</code>", parse_mode="HTML")
 
@@ -440,9 +432,6 @@ async def balance_handler(message: Message):
     balance = db_get_balance(user_id)
     await message.answer(f"👤 <b>User ID:</b> <code>{user_id}</code>\n💵 <b>Balance:</b> <code>${balance:.4f}</code>", parse_mode="HTML")
 
-# -------------------------------------------------------------
-# WITHDRAWAL WORKFLOW
-# -------------------------------------------------------------
 @dp.message(F.text == "💸 WITHDRAW")
 async def withdraw_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -490,7 +479,7 @@ async def withdraw_amount_received(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    details = data.get("details")
+    details = data.get("details", "None")
     await state.clear()
 
     admin_keyboard = InlineKeyboardMarkup(
@@ -540,4 +529,13 @@ async def handle_admin_withdrawal_response(callback: CallbackQuery):
             try:
                 await bot.send_message(
                     chat_id=target_user_id,
+                    text=f"🎉 <b>Withdrawal Approved!</b>\nYour payment of <code>${amount:.4f}</code> has been processed.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+        else:
+            await callback.message.answer("❌ User balance is now insufficient to satisfy this request.")
+    elif action == "rej":
+        await callback.message.edit_text(callback.message.text + "\n\n❌ <b>Status: REJECTED</b>", parse_mode="HTML")
  
