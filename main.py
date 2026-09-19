@@ -38,6 +38,33 @@ dp = Dispatcher(storage=MemoryStorage())
 http_session = None
 
 # =============================================================
+# HELPER FUNCTIONS
+# =============================================================
+def mask_phone_number(phone_number: str) -> str:
+    """Masks the middle digits of a phone number (e.g., 2348052055633 -> 23480****5633)."""
+    clean_num = str(phone_number).strip()
+    if len(clean_num) <= 7:
+        return clean_num[:2] + "****" + clean_num[-2:]
+    return clean_num[:5] + "****" + clean_num[-4:]
+
+def extract_otp_code(body: str, fallback_otp: str = "") -> str:
+    if fallback_otp and str(fallback_otp).strip() and str(fallback_otp) != "None":
+        return str(fallback_otp).strip()
+    match = re.search(r'\b\d{4,8}\b', body)
+    return match.group(0) if match else "No Code"
+
+def get_main_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")],
+            [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")],
+            [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")],
+            [KeyboardButton(text="📊 STATUS")]
+        ],
+        resize_keyboard=True
+    )
+
+# =============================================================
 # DATABASE SETUP (SQLITE)
 # =============================================================
 DB_FILE = "/tmp/bot_data.db"
@@ -162,23 +189,6 @@ def db_get_balance(user_id: int) -> float:
     return row[0] if row else 0.0
 
 PROCESSED_OTPS = set()
-
-def extract_otp_code(body: str, fallback_otp: str = "") -> str:
-    if fallback_otp and str(fallback_otp).strip() and str(fallback_otp) != "None":
-        return str(fallback_otp).strip()
-    match = re.search(r'\b\d{4,8}\b', body)
-    return match.group(0) if match else "No Code"
-
-def get_main_menu():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")],
-            [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")],
-            [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")],
-            [KeyboardButton(text="📊 STATUS")]
-        ],
-        resize_keyboard=True
-    )
 
 # -------------------------------------------------------------
 # ADMIN HANDLER
@@ -345,10 +355,11 @@ async def live_traffic_handler(message: Message):
                 if rows:
                     text = "🔴 <b>Recent 5 OTP Traffic:</b>\n\n"
                     for item in rows[:5]:
-                        dest = html.escape(str(item.get("destinationNumber", "N/A")))
+                        raw_dest = str(item.get("destinationNumber", "N/A"))
+                        masked_dest = html.escape(mask_phone_number(raw_dest))
                         body = html.escape(str(item.get("messageBody", "")))
                         otp = html.escape(extract_otp_code(body, item.get("otp")))
-                        text += f"📱 <b>Num:</b> <code>{dest}</code>\n🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <code>{body[:40]}</code>\n───\n"
+                        text += f"📱 <b>Num:</b> <code>{masked_dest}</code>\n🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <code>{body[:40]}</code>\n───\n"
                     await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
                     return
                 else:
@@ -391,13 +402,16 @@ async def poll_thirdwave_traffic():
 
                             PROCESSED_OTPS.add(msg_id)
 
-                            safe_phone = html.escape(phone_number)
+                            # Mask phone number for public/group view
+                            masked_phone = html.escape(mask_phone_number(phone_number))
+                            full_phone = html.escape(phone_number)
                             safe_otp = html.escape(otp_code)
                             safe_body = html.escape(body)
 
+                            # Group message with masked phone number
                             group_msg = (
                                 f"🔥 <b>NEW OTP RECEIVED!</b> 🔥\n\n"
-                                f"📱 <b>Number:</b> <code>{safe_phone}</code>\n"
+                                f"📱 <b>Number:</b> <code>{masked_phone}</code>\n"
                                 f"🔑 <b>OTP Code:</b> <code>{safe_otp}</code>\n"
                                 f"💬 <b>Message:</b> <code>{safe_body}</code>"
                             )
@@ -406,6 +420,7 @@ async def poll_thirdwave_traffic():
                             except Exception as group_err:
                                 print(f"[ERROR] Group Forwarding Failed: {group_err}")
 
+                            # Private user notification (uses unmasked full number)
                             user_info = db_get_assigned_user(phone_number)
                             if user_info:
                                 u_id = user_info["user_id"]
@@ -415,7 +430,7 @@ async def poll_thirdwave_traffic():
                                 try:
                                     await bot.send_message(
                                         chat_id=u_id,
-                                        text=f"🌐 <b>Your OTP Received ({srv} - {cntry})!</b>\n📱 <code>{safe_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
+                                        text=f"🌐 <b>Your OTP Received ({srv} - {cntry})!</b>\n📱 <code>{full_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
                                         parse_mode="HTML"
                                     )
                                 except Exception:
