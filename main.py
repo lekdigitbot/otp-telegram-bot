@@ -19,18 +19,28 @@ from aiogram.types import (
 )
 
 # =============================================================
-# CONFIGURATION
+# CONFIGURATION (FETCHED FROM ENVIRONMENT VARIABLES / SECRETS)
 # =============================================================
-BOT_TOKEN = "8785747989:AAFYjGrfhk4N-UGhf-WzhTLRf8_y08wsTh4"                  # Replace with your Telegram Bot Token
-RENDER_URL = "https://otp-telegram-bot-fpmp.onrender.com"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
-ADMIN_ID = 7103520365                           # Your Telegram User ID
-TELEGRAM_GROUP_ID = -1004315686306              # Telegram Group ID
+# Safely parse numeric IDs from environment variables
+ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW else 0
 
-THIRDWAVE_API_KEY = "tw_live_5e1666d46397c359b5ba2eda85b40fdf384c2ffd37ebb519290f358ef4260416"       # Replace with your Thirdwave API Key
+TELEGRAM_GROUP_ID_RAW = os.getenv("TELEGRAM_GROUP_ID")
+TELEGRAM_GROUP_ID = int(TELEGRAM_GROUP_ID_RAW) if TELEGRAM_GROUP_ID_RAW else 0
+
+THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
 FLAT_OTP_RATE = 0.003
+
+# Validate that essential credentials exist before starting
+if not BOT_TOKEN:
+    raise ValueError("❌ Missing required environment variable: BOT_TOKEN")
+if not THIRDWAVE_API_KEY:
+    raise ValueError("❌ Missing required environment variable: THIRDWAVE_API_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -473,4 +483,4 @@ async def process_telegram_update(request: Request):
 @app.get("/")
 async def health_check():
     return {"status": "bot is running"}
-    
+        
