@@ -41,13 +41,14 @@ BACKUP_GROUP_ID = int(BACKUP_GROUP_ID_RAW) if BACKUP_GROUP_ID_RAW else 0
 OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone")
 DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup")
 BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
+SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")  # Custom Support Handle
 
 THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
-FLAT_OTP_RATE = 0.003
+DEFAULT_OTP_RATE = 0.003
 MIN_WITHDRAWAL = 0.25
-REFERRAL_BONUS = 0.05  # Bonus reward paid to referrer after referred user gets 3 OTPs
+REFERRAL_BONUS = 0.05
 
 if not BOT_TOKEN:
     raise ValueError("❌ Missing required environment variable: BOT_TOKEN")
@@ -102,6 +103,16 @@ def get_force_join_keyboard():
         ]
     )
 
+def get_otp_group_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK),
+                InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)
+            ]
+        ]
+    )
+
 async def is_user_member(user_id: int, chat_id: int) -> bool:
     if not chat_id:
         return True
@@ -135,7 +146,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             service TEXT,
             country TEXT,
-            phone_number TEXT UNIQUE
+            phone_number TEXT UNIQUE,
+            rate REAL DEFAULT 0.003
         )
     """)
     cursor.execute("""
@@ -143,7 +155,8 @@ def init_db():
             phone_number TEXT PRIMARY KEY,
             user_id INTEGER,
             service TEXT,
-            country TEXT
+            country TEXT,
+            rate REAL DEFAULT 0.003
         )
     """)
     cursor.execute("""
@@ -172,15 +185,15 @@ def init_db():
 
 init_db()
 
-def db_add_stock(service: str, country: str, numbers: list):
+def db_add_stock(service: str, country: str, rate: float, numbers: list):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
     added_count = 0
     for num in numbers:
         try:
             cursor.execute(
-                "INSERT INTO stock (service, country, phone_number) VALUES (?, ?, ?)",
-                (service, country, num)
+                "INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)",
+                (service, country, rate, num)
             )
             added_count += 1
         except sqlite3.IntegrityError:
@@ -188,6 +201,28 @@ def db_add_stock(service: str, country: str, numbers: list):
     conn.commit()
     conn.close()
     return added_count
+
+def db_delete_number(phone_number: str) -> bool:
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM stock WHERE phone_number = ?", (phone_number,))
+    s_rows = cursor.rowcount
+    cursor.execute("DELETE FROM assignments WHERE phone_number = ?", (phone_number,))
+    a_rows = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return (s_rows + a_rows) > 0
+
+def db_clear_service(service: str) -> int:
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM stock WHERE service = ?", (service,))
+    s_rows = cursor.rowcount
+    cursor.execute("DELETE FROM assignments WHERE service = ?", (service,))
+    a_rows = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return s_rows + a_rows
 
 def db_get_services():
     conn = sqlite3.connect(DB_FILE, timeout=10)
@@ -201,46 +236,49 @@ def db_get_countries_for_service(service: str):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT country, COUNT(*) FROM stock WHERE service = ? GROUP BY country HAVING COUNT(*) >= 2",
+        "SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= 2",
         (service,)
     )
     rows = cursor.fetchall()
     conn.close()
-    return {row[0]: row[1] for row in rows}
+    # returns dict of {country: (count, rate)}
+    return {row[0]: (row[2], row[1]) for row in rows}
 
 def db_assign_two_numbers(service: str, country: str, user_id: int):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT phone_number FROM stock WHERE service = ? AND country = ? LIMIT 2",
+        "SELECT phone_number, rate FROM stock WHERE service = ? AND country = ? LIMIT 2",
         (service, country)
     )
     rows = cursor.fetchall()
     
     if len(rows) < 2:
         conn.close()
-        return None
+        return None, 0.0
 
     nums = [rows[0][0], rows[1][0]]
+    rate = rows[0][1]
+
     for num in nums:
         cursor.execute("DELETE FROM stock WHERE phone_number = ?", (num,))
         cursor.execute(
-            "INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country) VALUES (?, ?, ?, ?)",
-            (num, user_id, service, country)
+            "INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)",
+            (num, user_id, service, country, rate)
         )
     
     conn.commit()
     conn.close()
-    return nums
+    return nums, rate
 
 def db_get_assigned_user(phone_number: str):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, service, country FROM assignments WHERE phone_number = ?", (phone_number,))
+    cursor.execute("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (phone_number,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {"user_id": row[0], "service": row[1], "country": row[2]}
+        return {"user_id": row[0], "service": row[1], "country": row[2], "rate": row[3]}
     return None
 
 def db_add_balance(user_id: int, amount: float):
@@ -292,16 +330,12 @@ def db_register_referral(user_id: int, referrer_id: int):
 def db_record_otp_and_check_referral(user_id: int):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
-    
-    # Record weekly log
     cursor.execute("INSERT INTO otp_logs (user_id) VALUES (?)", (user_id,))
-    
-    # Update referral progress
     cursor.execute("SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     
     reward_referrer_id = None
-    if row and row[2] == 0:  # Not yet rewarded
+    if row and row[2] == 0:
         referrer_id, current_count, _ = row
         new_count = current_count + 1
         if new_count >= 3:
@@ -332,15 +366,12 @@ def db_get_referral_stats(user_id: int):
 def db_get_weekly_stats(user_id: int):
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
-    
-    # User count for the last 7 days
     cursor.execute(
         "SELECT COUNT(*) FROM otp_logs WHERE user_id = ? AND timestamp >= datetime('now', '-7 days')",
         (user_id,)
     )
     user_weekly_count = cursor.fetchone()[0]
 
-    # Top 3 Leaderboard over the last 7 days
     cursor.execute("""
         SELECT user_id, COUNT(*) as cnt 
         FROM otp_logs 
@@ -351,7 +382,6 @@ def db_get_weekly_stats(user_id: int):
     """)
     top_3 = cursor.fetchall()
     conn.close()
-    
     return user_weekly_count, top_3
 
 PROCESSED_OTPS = set()
@@ -370,12 +400,13 @@ async def add_number_admin(message: Message):
     if not lines:
         return
 
-    first_line_parts = lines[0].split(maxsplit=2)
+    first_line_parts = lines[0].split(maxsplit=3)
     
+    # Format: /addnumber Service Country [Rate]
     if len(first_line_parts) < 3:
         await message.answer(
-            "⚠️ <b>Usage Format:</b>\n"
-            "<code>/addnumber Bolt Nigeria\n"
+            "⚠️ <b>Usage Format with Custom Price:</b>\n"
+            "<code>/addnumber Whatsapp Nigeria 0.005\n"
             "2348052055633\n"
             "2348052265099</code>",
             parse_mode="HTML"
@@ -384,8 +415,15 @@ async def add_number_admin(message: Message):
 
     service_name = first_line_parts[1].capitalize()
     country_name = first_line_parts[2].capitalize()
-    raw_numbers = []
+    
+    rate = DEFAULT_OTP_RATE
+    if len(first_line_parts) >= 4:
+        try:
+            rate = float(first_line_parts[3])
+        except ValueError:
+            rate = DEFAULT_OTP_RATE
 
+    raw_numbers = []
     if len(lines) > 1:
         for line in lines[1:]:
             raw_numbers.extend(line.split(","))
@@ -396,10 +434,10 @@ async def add_number_admin(message: Message):
         await message.answer("⚠️ No valid phone numbers found in input.", parse_mode="HTML")
         return
 
-    added_count = db_add_stock(service_name, country_name, new_numbers)
+    added_count = db_add_stock(service_name, country_name, rate, new_numbers)
 
     await message.answer(
-        f"✅ <b>Added {added_count} number(s) to {service_name} ({country_name})!</b>",
+        f"✅ <b>Added {added_count} number(s) to {service_name} ({country_name}) at rate ${rate:.4f}!</b>",
         parse_mode="HTML"
     )
 
@@ -407,13 +445,45 @@ async def add_number_admin(message: Message):
         f"📢 <b>NEW STOCK UPDATE!</b> 📢\n\n"
         f"🔹 <b>Service:</b> {service_name}\n"
         f"🌍 <b>Country:</b> {country_name}\n"
+        f"💵 <b>Rate:</b> <code>${rate:.4f}</code> / OTP\n"
         f"📱 <b>New Numbers Added:</b> <code>{added_count}</code>\n"
         f"🚀 <i>Press 'GET NUMBER' in bot to request your numbers!</i>"
     )
     try:
-        await bot.send_message(chat_id=TELEGRAM_GROUP_ID, text=group_announcement, parse_mode="HTML")
+        await bot.send_message(
+            chat_id=TELEGRAM_GROUP_ID,
+            text=group_announcement,
+            reply_markup=get_otp_group_keyboard(),
+            parse_mode="HTML"
+        )
     except Exception as err:
         print(f"[ERROR] Stock announcement failed: {err}")
+
+@dp.message(F.text.startswith("/delnumber"))
+async def del_number_admin(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("⚠️ Usage: <code>/delnumber 2348052055633</code>", parse_mode="HTML")
+        return
+    phone = re.sub(r"\D", "", parts[1])
+    if db_delete_number(phone):
+        await message.answer(f"✅ Number <code>{phone}</code> removed from bot stock & assignments.", parse_mode="HTML")
+    else:
+        await message.answer(f"❌ Number <code>{phone}</code> not found.", parse_mode="HTML")
+
+@dp.message(F.text.startswith("/clearservice"))
+async def clear_service_admin(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("⚠️ Usage: <code>/clearservice Whatsapp</code>", parse_mode="HTML")
+        return
+    srv = parts[1].capitalize()
+    removed = db_clear_service(srv)
+    await message.answer(f"✅ Removed service <b>{srv}</b> ({removed} total entries purged).", parse_mode="HTML")
 
 # =============================================================
 # CALLBACK HANDLERS
@@ -493,7 +563,6 @@ async def start_handler(message: Message):
     user_id = message.from_user.id
     text_parts = message.text.split()
     
-    # Handle Referral Link Parsing
     if len(text_parts) > 1 and text_parts[1].isdigit():
         referrer_id = int(text_parts[1])
         db_register_referral(user_id, referrer_id)
@@ -509,6 +578,19 @@ async def start_handler(message: Message):
     welcome_text = f"👋 Welcome <b>{message.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!"
     await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="HTML")
 
+@dp.message(F.text == "💀 SUPPORT")
+async def support_handler(message: Message):
+    support_btn = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Contact Support", url=SUPPORT_LINK)]
+        ]
+    )
+    await message.answer(
+        "🛠️ <b>Need help or have questions?</b>\n\nClick the button below to reach out to our official support team:",
+        reply_markup=support_btn,
+        parse_mode="HTML"
+    )
+
 @dp.message(F.text == "📱 GET NUMBER")
 async def show_services_handler(message: Message):
     if not await check_user_joined(message.from_user.id):
@@ -520,7 +602,7 @@ async def show_services_handler(message: Message):
     if not active_services:
         await message.answer(
             "⚠️ <b>Out of Stock!</b> No service has at least 2 numbers available right now.\n"
-            "<i>(Admin needs to add stock using /addnumber Service Country)</i>",
+            "<i>(Admin needs to add stock using /addnumber Service Country Rate)</i>",
             reply_markup=get_main_menu(),
             parse_mode="HTML"
         )
@@ -551,8 +633,11 @@ async def process_service_selection(callback: CallbackQuery):
         return
 
     buttons = [
-        [InlineKeyboardButton(text=f"🌍 {cntry} ({count} available)", callback_data=f"c_{service_name}_{cntry}")]
-        for cntry, count in countries.items()
+        [InlineKeyboardButton(
+            text=f"🌍 {cntry} (${rate:.3f}/OTP) - {count} available",
+            callback_data=f"c_{service_name}_{cntry}"
+        )]
+        for cntry, (count, rate) in countries.items()
     ]
     await callback.message.answer(
         f"🌍 <b>Select Country for {html.escape(service_name)}:</b>",
@@ -580,7 +665,7 @@ async def process_number_assignment(callback: CallbackQuery):
     country_name = parts[2]
     user_id = callback.from_user.id
 
-    nums = db_assign_two_numbers(service_name, country_name, user_id)
+    nums, rate = db_assign_two_numbers(service_name, country_name, user_id)
 
     if not nums:
         await callback.message.answer(
@@ -596,7 +681,7 @@ async def process_number_assignment(callback: CallbackQuery):
         f"📱 <b>Number 1:</b> <code>{nums[0]}</code>\n"
         f"📱 <b>Number 2:</b> <code>{nums[1]}</code>\n\n"
         f"⏳ <b>Waiting for OTPs...</b>\n"
-        f"💰 <b>Rate:</b> <code>${FLAT_OTP_RATE}</code> / OTP\n\n"
+        f"💰 <b>Rate:</b> <code>${rate:.4f}</code> / OTP\n\n"
         f"📢 <i>All incoming OTPs stream directly to our main group!</i>"
     )
     await callback.message.answer(response, parse_mode="HTML")
@@ -649,7 +734,6 @@ async def balance_handler(message: Message):
     balance = db_get_balance(user_id)
     await message.answer(f"👤 <b>User ID:</b> <code>{user_id}</code>\n💵 <b>Balance:</b> <code>${balance:.4f}</code>", parse_mode="HTML")
 
-# --- FEATURE 1: REFERRAL SYSTEM ---
 @dp.message(F.text == "♾️ REFER AND EARN")
 async def referral_handler(message: Message):
     if not await check_user_joined(message.from_user.id):
@@ -672,7 +756,6 @@ async def referral_handler(message: Message):
     )
     await message.answer(msg, parse_mode="HTML")
 
-# --- FEATURE 2: WITHDRAWAL SYSTEM WITH FSM ---
 @dp.message(F.text == "💸 WITHDRAW")
 async def withdraw_start(message: Message, state: FSMContext):
     if not await check_user_joined(message.from_user.id):
@@ -729,7 +812,6 @@ async def withdraw_amount_received(message: Message, state: FSMContext):
 
     await message.answer("✅ <b>Withdrawal Request Submitted!</b>\nYour request has been sent to Admin for review.", parse_mode="HTML")
 
-    # Send Request to Admin
     admin_btn = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -750,7 +832,6 @@ async def withdraw_amount_received(message: Message, state: FSMContext):
     except Exception as err:
         print(f"[ERROR] Failed notifying admin: {err}")
 
-# --- FEATURE 3: STATUS & WEEKLY LEADERBOARD ---
 @dp.message(F.text == "📊 STATUS")
 async def status_handler(message: Message):
     if not await check_user_joined(message.from_user.id):
@@ -803,36 +884,45 @@ async def poll_thirdwave_traffic():
 
                             PROCESSED_OTPS.add(msg_id)
 
+                            user_info = db_get_assigned_user(phone_number)
+                            srv_title = user_info["service"] if user_info else "OTP"
+                            cntry_title = user_info["country"] if user_info else "Service"
+                            otp_rate = user_info["rate"] if user_info else DEFAULT_OTP_RATE
+
                             masked_phone = html.escape(mask_phone_number(phone_number))
                             full_phone = html.escape(phone_number)
                             safe_otp = html.escape(otp_code)
                             safe_body = html.escape(body)
 
+                            # OTP Group Forwarding message formatted like screenshot
                             group_msg = (
-                                f"🔥 <b>NEW OTP RECEIVED!</b> 🔥\n\n"
-                                f"📱 <b>Number:</b> <code>{masked_phone}</code>\n"
-                                f"🔑 <b>OTP Code:</b> <code>{safe_otp}</code>\n"
-                                f"💬 <b>Message:</b> <code>{safe_body}</code>"
+                                f"🔥 <b>{cntry_title} {srv_title} OTP Received!</b> ✨\n\n"
+                                f"🌍 <b>Country:</b> {cntry_title}\n"
+                                f"🛒 <b>Service:</b> {srv_title}\n"
+                                f"📱 <b>Number:</b> <code>+{masked_phone}</code>\n"
+                                f"🔑 <b>OTP:</b> <code>{safe_otp}</code>\n\n"
+                                f"✉️ <b>Full Message:</b>\n<code>{safe_body}</code>"
                             )
                             try:
-                                await bot.send_message(chat_id=TELEGRAM_GROUP_ID, text=group_msg, parse_mode="HTML")
+                                await bot.send_message(
+                                    chat_id=TELEGRAM_GROUP_ID,
+                                    text=group_msg,
+                                    reply_markup=get_otp_group_keyboard(),
+                                    parse_mode="HTML"
+                                )
                             except Exception as group_err:
                                 print(f"[ERROR] Group Forwarding Failed: {group_err}")
 
-                            user_info = db_get_assigned_user(phone_number)
                             if user_info:
                                 u_id = user_info["user_id"]
-                                srv = user_info["service"]
-                                cntry = user_info["country"]
-                                db_add_balance(u_id, FLAT_OTP_RATE)
+                                db_add_balance(u_id, otp_rate)
                                 
-                                # Track OTP & process referral check
                                 rewarded_referrer = db_record_otp_and_check_referral(u_id)
                                 if rewarded_referrer:
                                     try:
                                         await bot.send_message(
                                             chat_id=rewarded_referrer,
-                                            text=f"🎉 <b>Referral Bonus Credited!</b>\nYour referred user has completed 3 OTPs. You earned <b>${REFERRAL_BONUS:.2f}</b>!",
+                                            text=f"🎉 <b>Referral Bonus Credited!</b>\nYour referred user completed 3 OTPs. You earned <b>${REFERRAL_BONUS:.2f}</b>!",
                                             parse_mode="HTML"
                                         )
                                     except Exception:
@@ -841,7 +931,7 @@ async def poll_thirdwave_traffic():
                                 try:
                                     await bot.send_message(
                                         chat_id=u_id,
-                                        text=f"🌐 <b>Your OTP Received ({srv} - {cntry})!</b>\n📱 <code>{full_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
+                                        text=f"🌐 <b>Your OTP Received ({srv_title} - {cntry_title})!</b>\n📱 <code>{full_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
                                         parse_mode="HTML"
                                     )
                                 except Exception:
