@@ -31,12 +31,24 @@ ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW else 0
 TELEGRAM_GROUP_ID_RAW = os.getenv("TELEGRAM_GROUP_ID")
 TELEGRAM_GROUP_ID = int(TELEGRAM_GROUP_ID_RAW) if TELEGRAM_GROUP_ID_RAW else 0
 
+# NEW: Additional Required Groups / Channels
+DISCUSSION_GROUP_ID_RAW = os.getenv("DISCUSSION_GROUP_ID")
+DISCUSSION_GROUP_ID = int(DISCUSSION_GROUP_ID_RAW) if DISCUSSION_GROUP_ID_RAW else 0
+
+BACKUP_GROUP_ID_RAW = os.getenv("BACKUP_GROUP_ID")
+BACKUP_GROUP_ID = int(BACKUP_GROUP_ID_RAW) if BACKUP_GROUP_ID_RAW else 0
+
+# Channel / Group Invite Links (Set these in Render or default below)
+OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone")
+DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup")
+BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
+
 THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
 FLAT_OTP_RATE = 0.003
 
-# Validate that essential credentials exist before starting
+# Validate essential credentials
 if not BOT_TOKEN:
     raise ValueError("❌ Missing required environment variable: BOT_TOKEN")
 if not THIRDWAVE_API_KEY:
@@ -48,10 +60,10 @@ dp = Dispatcher(storage=MemoryStorage())
 http_session = None
 
 # =============================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS & FORCED JOIN LOGIC
 # =============================================================
 def mask_phone_number(phone_number: str) -> str:
-    """Masks the middle digits of a phone number (e.g., 2348052055633 -> 23480****5633)."""
+    """Masks the middle digits of a phone number."""
     clean_num = str(phone_number).strip()
     if len(clean_num) <= 7:
         return clean_num[:2] + "****" + clean_num[-2:]
@@ -73,6 +85,40 @@ def get_main_menu():
         ],
         resize_keyboard=True
     )
+
+def get_force_join_keyboard():
+    """Generates the join links keyboard."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Join Main OTP Group", url=OTP_GROUP_LINK)],
+            [InlineKeyboardButton(text="💬 Join Discussion Group", url=DISCUSSION_GROUP_LINK)],
+            [InlineKeyboardButton(text="🛡️ Join Backup Channel", url=BACKUP_GROUP_LINK)],
+            [InlineKeyboardButton(text="✅ I HAVE JOINED ALL", callback_data="check_membership")]
+        ]
+    )
+
+async def is_user_member(user_id: int, chat_id: int) -> bool:
+    """Checks if a user is a member/admin of a target group."""
+    if not chat_id:
+        return True  # Skip check if ID is not set
+    try:
+        member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception as e:
+        print(f"[MEMBERSHIP CHECK ERROR] Chat {chat_id}, User {user_id}: {e}")
+        return False
+
+async def check_user_joined(user_id: int) -> bool:
+    """Verifies user membership across all mandatory channels/groups."""
+    # Admins bypass mandatory join checks
+    if user_id == ADMIN_ID:
+        return True
+
+    joined_otp = await is_user_member(user_id, TELEGRAM_GROUP_ID)
+    joined_disc = await is_user_member(user_id, DISCUSSION_GROUP_ID)
+    joined_back = await is_user_member(user_id, BACKUP_GROUP_ID)
+
+    return joined_otp and joined_disc and joined_back
 
 # =============================================================
 # DATABASE SETUP (SQLITE)
@@ -260,15 +306,44 @@ async def add_number_admin(message: Message):
         print(f"[ERROR] Stock announcement failed: {err}")
 
 # -------------------------------------------------------------
-# USER HANDLERS
+# MEMBERSHIP CHECK CALLBACK
+# -------------------------------------------------------------
+@dp.callback_query(F.data == "check_membership")
+async def process_membership_check(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if await check_user_joined(user_id):
+        await callback.answer("✅ Thank you! You have joined all channels.", show_alert=True)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        welcome_text = f"👋 Welcome <b>{callback.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!"
+        await callback.message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="HTML")
+    else:
+        await callback.answer("❌ You haven't joined all required groups/channels yet!", show_alert=True)
+
+# -------------------------------------------------------------
+# USER HANDLERS (PROTECTED WITH JOIN CHECK)
 # -------------------------------------------------------------
 @dp.message(F.text == "/start")
 async def start_handler(message: Message):
+    if not await check_user_joined(message.from_user.id):
+        join_msg = (
+            f"⚠️ <b>Access Restricted!</b>\n\n"
+            f"Hello <b>{message.from_user.first_name}</b>, to use this bot you must first join all our official channels and groups below:"
+        )
+        await message.answer(join_msg, reply_markup=get_force_join_keyboard(), parse_mode="HTML")
+        return
+
     welcome_text = f"👋 Welcome <b>{message.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!"
     await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="HTML")
 
 @dp.message(F.text == "📱 GET NUMBER")
 async def show_services_handler(message: Message):
+    if not await check_user_joined(message.from_user.id):
+        await message.answer("⚠️ Please join all our official groups/channels first!", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
+        return
+
     active_services = db_get_services()
 
     if not active_services:
@@ -288,6 +363,10 @@ async def show_services_handler(message: Message):
 
 @dp.callback_query(F.data.startswith("s_"))
 async def process_service_selection(callback: CallbackQuery):
+    if not await check_user_joined(callback.from_user.id):
+        await callback.answer("⚠️ You must join all groups first!", show_alert=True)
+        return
+
     try:
         await callback.answer()
     except Exception:
@@ -312,6 +391,10 @@ async def process_service_selection(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("c_"))
 async def process_number_assignment(callback: CallbackQuery):
+    if not await check_user_joined(callback.from_user.id):
+        await callback.answer("⚠️ You must join all groups first!", show_alert=True)
+        return
+
     try:
         await callback.answer("Assigning numbers...")
     except Exception:
@@ -349,6 +432,10 @@ async def process_number_assignment(callback: CallbackQuery):
 
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def live_traffic_handler(message: Message):
+    if not await check_user_joined(message.from_user.id):
+        await message.answer("⚠️ Please join all our official groups/channels first!", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
+        return
+
     global http_session
     if not http_session or http_session.closed:
         await message.answer("⚠️ Server session starting up, please try again in a few seconds.", reply_markup=get_main_menu())
@@ -383,6 +470,10 @@ async def live_traffic_handler(message: Message):
 
 @dp.message(F.text == "💰 BALANCE")
 async def balance_handler(message: Message):
+    if not await check_user_joined(message.from_user.id):
+        await message.answer("⚠️ Please join all our official groups/channels first!", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
+        return
+
     user_id = message.from_user.id
     balance = db_get_balance(user_id)
     await message.answer(f"👤 <b>User ID:</b> <code>{user_id}</code>\n💵 <b>Balance:</b> <code>${balance:.4f}</code>", parse_mode="HTML")
@@ -412,75 +503,12 @@ async def poll_thirdwave_traffic():
 
                             PROCESSED_OTPS.add(msg_id)
 
-                            # Mask phone number for public/group view
                             masked_phone = html.escape(mask_phone_number(phone_number))
                             full_phone = html.escape(phone_number)
                             safe_otp = html.escape(otp_code)
                             safe_body = html.escape(body)
 
-                            # Group message with masked phone number
                             group_msg = (
                                 f"🔥 <b>NEW OTP RECEIVED!</b> 🔥\n\n"
                                 f"📱 <b>Number:</b> <code>{masked_phone}</code>\n"
-                                f"🔑 <b>OTP Code:</b> <code>{safe_otp}</code>\n"
-                                f"💬 <b>Message:</b> <code>{safe_body}</code>"
-                            )
-                            try:
-                                await bot.send_message(chat_id=TELEGRAM_GROUP_ID, text=group_msg, parse_mode="HTML")
-                            except Exception as group_err:
-                                print(f"[ERROR] Group Forwarding Failed: {group_err}")
-
-                            # Private user notification (uses unmasked full number)
-                            user_info = db_get_assigned_user(phone_number)
-                            if user_info:
-                                u_id = user_info["user_id"]
-                                srv = user_info["service"]
-                                cntry = user_info["country"]
-                                db_add_balance(u_id, FLAT_OTP_RATE)
-                                try:
-                                    await bot.send_message(
-                                        chat_id=u_id,
-                                        text=f"🌐 <b>Your OTP Received ({srv} - {cntry})!</b>\n📱 <code>{full_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
-                                        parse_mode="HTML"
-                                    )
-                                except Exception:
-                                    pass
-        except Exception as e:
-            print(f"[WORKER ERROR] {e}")
-        await asyncio.sleep(5)
-
-# -------------------------------------------------------------
-# FASTAPI LIFESPAN SETUP
-# -------------------------------------------------------------
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global http_session
-    http_session = aiohttp.ClientSession()
-    
-    webhook_url = f"{RENDER_URL}/telegram-webhook"
-    await bot.set_webhook(webhook_url, drop_pending_updates=True)
-    
-    polling_task = asyncio.create_task(poll_thirdwave_traffic())
-    
-    yield
-    
-    polling_task.cancel()
-    if http_session and not http_session.closed:
-        await http_session.close()
-    await bot.delete_webhook()
-    await bot.session.close()
-
-app = FastAPI(lifespan=lifespan)
-
-@app.post("/")
-@app.post("/telegram-webhook")
-async def process_telegram_update(request: Request):
-    data = await request.json()
-    update = Update.model_validate(data, context={"bot": bot})
-    await dp.feed_update(bot, update)
-    return {"status": "ok"}
-
-@app.get("/")
-async def health_check():
-    return {"status": "bot is running"}
-        
+                         
