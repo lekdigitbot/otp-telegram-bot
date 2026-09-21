@@ -31,14 +31,14 @@ ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW else 0
 TELEGRAM_GROUP_ID_RAW = os.getenv("TELEGRAM_GROUP_ID")
 TELEGRAM_GROUP_ID = int(TELEGRAM_GROUP_ID_RAW) if TELEGRAM_GROUP_ID_RAW else 0
 
-# NEW: Additional Required Groups / Channels
+# Additional Required Groups / Channels
 DISCUSSION_GROUP_ID_RAW = os.getenv("DISCUSSION_GROUP_ID")
 DISCUSSION_GROUP_ID = int(DISCUSSION_GROUP_ID_RAW) if DISCUSSION_GROUP_ID_RAW else 0
 
 BACKUP_GROUP_ID_RAW = os.getenv("BACKUP_GROUP_ID")
 BACKUP_GROUP_ID = int(BACKUP_GROUP_ID_RAW) if BACKUP_GROUP_ID_RAW else 0
 
-# Channel / Group Invite Links (Set these in Render or default below)
+# Channel / Group Invite Links
 OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone")
 DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup")
 BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
@@ -110,7 +110,6 @@ async def is_user_member(user_id: int, chat_id: int) -> bool:
 
 async def check_user_joined(user_id: int) -> bool:
     """Verifies user membership across all mandatory channels/groups."""
-    # Admins bypass mandatory join checks
     if user_id == ADMIN_ID:
         return True
 
@@ -511,4 +510,5 @@ async def poll_thirdwave_traffic():
                             group_msg = (
                                 f"🔥 <b>NEW OTP RECEIVED!</b> 🔥\n\n"
                                 f"📱 <b>Number:</b> <code>{masked_phone}</code>\n"
-                         
+                                f"🔑 <b>OTP Code:</b> <code>{safe_otp}</code>\n"
+                              
