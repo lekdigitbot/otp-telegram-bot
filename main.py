@@ -512,4 +512,53 @@ async def poll_thirdwave_traffic():
 
                             user_info = db_get_assigned_user(phone_number)
                             if user_info:
-                              
+                                u_id = user_info["user_id"]
+                                srv = user_info["service"]
+                                cntry = user_info["country"]
+                                db_add_balance(u_id, FLAT_OTP_RATE)
+                                try:
+                                    await bot.send_message(
+                                        chat_id=u_id,
+                                        text=f"🌐 <b>Your OTP Received ({srv} - {cntry})!</b>\n📱 <code>{full_phone}</code>\n🔑 Code: <code>{safe_otp}</code>",
+                                        parse_mode="HTML"
+                                    )
+                                except Exception:
+                                    pass
+        except Exception as e:
+            print(f"[WORKER ERROR] {e}")
+        await asyncio.sleep(5)
+
+# =============================================================
+# FASTAPI LIFESPAN SETUP
+# =============================================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global http_session
+    http_session = aiohttp.ClientSession()
+    
+    webhook_url = f"{RENDER_URL}/telegram-webhook"
+    await bot.set_webhook(webhook_url, drop_pending_updates=True)
+    
+    polling_task = asyncio.create_task(poll_thirdwave_traffic())
+    
+    yield
+    
+    polling_task.cancel()
+    if http_session and not http_session.closed:
+        await http_session.close()
+    await bot.delete_webhook()
+    await bot.session.close()
+
+app = FastAPI(lifespan=lifespan)
+
+@app.post("/")
+@app.post("/telegram-webhook")
+async def process_telegram_update(request: Request):
+    data = await request.json()
+    update = Update.model_validate(data, context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return {"status": "ok"}
+
+@app.get("/")
+async def health_check():
+    return {"status": "bot is running"}
