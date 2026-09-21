@@ -19,26 +19,23 @@ from aiogram.types import (
 )
 
 # =============================================================
-# CONFIGURATION (FETCHED FROM ENVIRONMENT VARIABLES / SECRETS)
+# CONFIGURATION
 # =============================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
-# Safely parse numeric IDs from environment variables
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW else 0
 
 TELEGRAM_GROUP_ID_RAW = os.getenv("TELEGRAM_GROUP_ID")
 TELEGRAM_GROUP_ID = int(TELEGRAM_GROUP_ID_RAW) if TELEGRAM_GROUP_ID_RAW else 0
 
-# Additional Required Groups / Channels
 DISCUSSION_GROUP_ID_RAW = os.getenv("DISCUSSION_GROUP_ID")
 DISCUSSION_GROUP_ID = int(DISCUSSION_GROUP_ID_RAW) if DISCUSSION_GROUP_ID_RAW else 0
 
 BACKUP_GROUP_ID_RAW = os.getenv("BACKUP_GROUP_ID")
 BACKUP_GROUP_ID = int(BACKUP_GROUP_ID_RAW) if BACKUP_GROUP_ID_RAW else 0
 
-# Channel / Group Invite Links
 OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone")
 DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup")
 BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
@@ -48,7 +45,6 @@ THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 
 FLAT_OTP_RATE = 0.003
 
-# Validate essential credentials
 if not BOT_TOKEN:
     raise ValueError("❌ Missing required environment variable: BOT_TOKEN")
 if not THIRDWAVE_API_KEY:
@@ -60,10 +56,9 @@ dp = Dispatcher(storage=MemoryStorage())
 http_session = None
 
 # =============================================================
-# HELPER FUNCTIONS & FORCED JOIN LOGIC
+# HELPER FUNCTIONS
 # =============================================================
 def mask_phone_number(phone_number: str) -> str:
-    """Masks the middle digits of a phone number."""
     clean_num = str(phone_number).strip()
     if len(clean_num) <= 7:
         return clean_num[:2] + "****" + clean_num[-2:]
@@ -87,7 +82,6 @@ def get_main_menu():
     )
 
 def get_force_join_keyboard():
-    """Generates the join links keyboard."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📢 Join Main OTP Group", url=OTP_GROUP_LINK)],
@@ -98,9 +92,8 @@ def get_force_join_keyboard():
     )
 
 async def is_user_member(user_id: int, chat_id: int) -> bool:
-    """Checks if a user is a member/admin of a target group."""
     if not chat_id:
-        return True  # Skip check if ID is not set
+        return True
     try:
         member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
         return member.status in ["member", "administrator", "creator"]
@@ -109,7 +102,6 @@ async def is_user_member(user_id: int, chat_id: int) -> bool:
         return False
 
 async def check_user_joined(user_id: int) -> bool:
-    """Verifies user membership across all mandatory channels/groups."""
     if user_id == ADMIN_ID:
         return True
 
@@ -120,7 +112,7 @@ async def check_user_joined(user_id: int) -> bool:
     return joined_otp and joined_disc and joined_back
 
 # =============================================================
-# DATABASE SETUP (SQLITE)
+# DATABASE SETUP
 # =============================================================
 DB_FILE = "/tmp/bot_data.db"
 
@@ -245,9 +237,9 @@ def db_get_balance(user_id: int) -> float:
 
 PROCESSED_OTPS = set()
 
-# -------------------------------------------------------------
-# ADMIN HANDLER
-# -------------------------------------------------------------
+# =============================================================
+# ADMIN HANDLERS
+# =============================================================
 @dp.message(F.text.startswith("/addnumber"))
 async def add_number_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -304,9 +296,9 @@ async def add_number_admin(message: Message):
     except Exception as err:
         print(f"[ERROR] Stock announcement failed: {err}")
 
-# -------------------------------------------------------------
-# MEMBERSHIP CHECK CALLBACK
-# -------------------------------------------------------------
+# =============================================================
+# CALLBACK HANDLERS
+# =============================================================
 @dp.callback_query(F.data == "check_membership")
 async def process_membership_check(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -321,9 +313,9 @@ async def process_membership_check(callback: CallbackQuery):
     else:
         await callback.answer("❌ You haven't joined all required groups/channels yet!", show_alert=True)
 
-# -------------------------------------------------------------
-# USER HANDLERS (PROTECTED WITH JOIN CHECK)
-# -------------------------------------------------------------
+# =============================================================
+# USER COMMAND HANDLERS
+# =============================================================
 @dp.message(F.text == "/start")
 async def start_handler(message: Message):
     if not await check_user_joined(message.from_user.id):
@@ -477,9 +469,9 @@ async def balance_handler(message: Message):
     balance = db_get_balance(user_id)
     await message.answer(f"👤 <b>User ID:</b> <code>{user_id}</code>\n💵 <b>Balance:</b> <code>${balance:.4f}</code>", parse_mode="HTML")
 
-# -------------------------------------------------------------
+# =============================================================
 # BACKGROUND WORKER
-# -------------------------------------------------------------
+# =============================================================
 async def poll_thirdwave_traffic():
     global http_session
     headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}
@@ -511,4 +503,13 @@ async def poll_thirdwave_traffic():
                                 f"🔥 <b>NEW OTP RECEIVED!</b> 🔥\n\n"
                                 f"📱 <b>Number:</b> <code>{masked_phone}</code>\n"
                                 f"🔑 <b>OTP Code:</b> <code>{safe_otp}</code>\n"
-                          
+                                f"💬 <b>Message:</b> <code>{safe_body}</code>"
+                            )
+                            try:
+                                await bot.send_message(chat_id=TELEGRAM_GROUP_ID, text=group_msg, parse_mode="HTML")
+                            except Exception as group_err:
+                                print(f"[ERROR] Group Forwarding Failed: {group_err}")
+
+                            user_info = db_get_assigned_user(phone_number)
+                            if user_info:
+                              
