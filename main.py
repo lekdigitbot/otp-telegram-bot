@@ -41,7 +41,7 @@ BACKUP_GROUP_ID = int(BACKUP_GROUP_ID_RAW) if BACKUP_GROUP_ID_RAW else 0
 OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone")
 DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup")
 BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
-SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")  # Custom Support Handle
+SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
 THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
@@ -71,7 +71,7 @@ class WithdrawalState(StatesGroup):
 # HELPER FUNCTIONS
 # =============================================================
 def mask_phone_number(phone_number: str) -> str:
-    clean_num = str(phone_number).strip()
+    clean_num = re.sub(r"\D", "", str(phone_number).strip())
     if len(clean_num) <= 7:
         return clean_num[:2] + "****" + clean_num[-2:]
     return clean_num[:5] + "****" + clean_num[-4:]
@@ -241,7 +241,6 @@ def db_get_countries_for_service(service: str):
     )
     rows = cursor.fetchall()
     conn.close()
-    # returns dict of {country: (count, rate)}
     return {row[0]: (row[2], row[1]) for row in rows}
 
 def db_assign_two_numbers(service: str, country: str, user_id: int):
@@ -272,9 +271,10 @@ def db_assign_two_numbers(service: str, country: str, user_id: int):
     return nums, rate
 
 def db_get_assigned_user(phone_number: str):
+    clean_num = re.sub(r"\D", "", str(phone_number).strip())
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (phone_number,))
+    cursor.execute("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,))
     row = cursor.fetchone()
     conn.close()
     if row:
@@ -372,6 +372,16 @@ def db_get_weekly_stats(user_id: int):
     )
     user_weekly_count = cursor.fetchone()[0]
 
+    # Daily breakdown for the last 7 days
+    cursor.execute("""
+        SELECT date(timestamp), COUNT(*) 
+        FROM otp_logs 
+        WHERE user_id = ? AND timestamp >= datetime('now', '-7 days')
+        GROUP BY date(timestamp) 
+        ORDER BY date(timestamp) DESC
+    """, (user_id,))
+    daily_rows = cursor.fetchall()
+
     cursor.execute("""
         SELECT user_id, COUNT(*) as cnt 
         FROM otp_logs 
@@ -382,7 +392,7 @@ def db_get_weekly_stats(user_id: int):
     """)
     top_3 = cursor.fetchall()
     conn.close()
-    return user_weekly_count, top_3
+    return user_weekly_count, daily_rows, top_3
 
 PROCESSED_OTPS = set()
 
@@ -402,7 +412,6 @@ async def add_number_admin(message: Message):
 
     first_line_parts = lines[0].split(maxsplit=3)
     
-    # Format: /addnumber Service Country [Rate]
     if len(first_line_parts) < 3:
         await message.answer(
             "⚠️ <b>Usage Format with Custom Price:</b>\n"
@@ -418,8 +427,9 @@ async def add_number_admin(message: Message):
     
     rate = DEFAULT_OTP_RATE
     if len(first_line_parts) >= 4:
+        clean_rate_str = re.sub(r"[^\d.]", "", first_line_parts[3])
         try:
-            rate = float(first_line_parts[3])
+            rate = float(clean_rate_str)
         except ValueError:
             rate = DEFAULT_OTP_RATE
 
@@ -441,6 +451,7 @@ async def add_number_admin(message: Message):
         parse_mode="HTML"
     )
 
+    # Stock Update text WITHOUT Channel and Chat buttons
     group_announcement = (
         f"📢 <b>NEW STOCK UPDATE!</b> 📢\n\n"
         f"🔹 <b>Service:</b> {service_name}\n"
@@ -453,7 +464,6 @@ async def add_number_admin(message: Message):
         await bot.send_message(
             chat_id=TELEGRAM_GROUP_ID,
             text=group_announcement,
-            reply_markup=get_otp_group_keyboard(),
             parse_mode="HTML"
         )
     except Exception as err:
@@ -634,7 +644,7 @@ async def process_service_selection(callback: CallbackQuery):
 
     buttons = [
         [InlineKeyboardButton(
-            text=f"🌍 {cntry} (${rate:.3f}/OTP) - {count} available",
+            text=f"🌍 {cntry} (${rate:.4f}/OTP) - {count} available",
             callback_data=f"c_{service_name}_{cntry}"
         )]
         for cntry, (count, rate) in countries.items()
@@ -839,11 +849,17 @@ async def status_handler(message: Message):
         return
 
     user_id = message.from_user.id
-    user_count, top_3 = db_get_weekly_stats(user_id)
+    user_count, daily_rows, top_3 = db_get_weekly_stats(user_id)
+
+    daily_text = ""
+    if daily_rows:
+        for day_date, cnt in daily_rows:
+            daily_text += f"📅 <b>{day_date}:</b> <code>{cnt}</code> OTPs\n"
+    else:
+        daily_text = "<i>No daily OTP records yet.</i>\n"
 
     medals = ["🥇 1st Place", "🥈 2nd Place", "🥉 3rd Place"]
     leaderboard_text = ""
-    
     if top_3:
         for idx, (uid, cnt) in enumerate(top_3):
             leaderboard_text += f"{medals[idx]}: User <code>{uid}</code> — <b>{cnt} OTPs</b>\n"
@@ -852,7 +868,9 @@ async def status_handler(message: Message):
 
     status_msg = (
         f"📊 <b>WEEKLY STATUS & LEADERBOARD</b> 📊\n\n"
-        f"📱 <b>Your OTPs (Last 7 Days):</b> <code>{user_count}</code> OTPs\n\n"
+        f"📱 <b>Your Total OTPs (Last 7 Days):</b> <code>{user_count}</code> OTPs\n\n"
+        f"🗓️ <b>Daily Breakdown:</b>\n"
+        f"{daily_text}\n"
         f"🏆 <b>Top Weekly Performers (Giveaway Rank):</b>\n"
         f"{leaderboard_text}\n"
         f"🎁 <i>Top 3 users get special weekly rewards! Keep completing OTPs to rank higher!</i>"
@@ -894,9 +912,9 @@ async def poll_thirdwave_traffic():
                             safe_otp = html.escape(otp_code)
                             safe_body = html.escape(body)
 
-                            # OTP Group Forwarding message formatted like screenshot
+                            # Exact format requested
                             group_msg = (
-                                f"🔥 <b>{cntry_title} {srv_title} OTP Received!</b> ✨\n\n"
+                                f"🔥 <b>New OTP Received!</b> ✨\n\n"
                                 f"🌍 <b>Country:</b> {cntry_title}\n"
                                 f"🛒 <b>Service:</b> {srv_title}\n"
                                 f"📱 <b>Number:</b> <code>+{masked_phone}</code>\n"
