@@ -18,7 +18,6 @@ from aiogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
     Update,
-    FSInputFile
 )
 
 # =============================================================
@@ -39,22 +38,13 @@ DISCUSSION_GROUP_ID = int(DISCUSSION_GROUP_ID_RAW) if DISCUSSION_GROUP_ID_RAW el
 BACKUP_GROUP_ID_RAW = os.getenv("BACKUP_GROUP_ID")
 BACKUP_GROUP_ID = int(BACKUP_GROUP_ID_RAW) if BACKUP_GROUP_ID_RAW else 0
 
-# Data Store Group ID (Used for automated database backups)
-DATA_STORE_GROUP_ID_RAW = os.getenv("DATA_STORE_GROUP_ID")
-DATA_STORE_GROUP_ID = int(DATA_STORE_GROUP_ID_RAW) if DATA_STORE_GROUP_ID_RAW else 0
-
 OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone")
 DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup")
 BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
 SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
-# Thirdwave Configuration
 THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
-
-# IVAS SMS Configuration (Loaded from Render Secrets)
-IVAS_COOKIE = os.getenv("IVAS_COOKIE")
-IVAS_PORTAL_URL = "https://www.ivasms.com/portal/live/test_sms"
 
 DEFAULT_OTP_RATE = 0.003
 MIN_WITHDRAWAL = 0.25
@@ -69,55 +59,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 http_session = None
-DB_FILE = "bot_data.db"
-
-# =============================================================
-# TELEGRAM BACKUP & RESTORE FUNCTIONS
-# =============================================================
-async def restore_database():
-    """Downloads the latest database file from the Data Store group on startup."""
-    if not DATA_STORE_GROUP_ID:
-        print("[DATABASE RESTORE WARNING] DATA_STORE_GROUP_ID not set. Skipping restore.")
-        return
-    
-    print("🔄 Checking Data Store Group for existing database backup...")
-    try:
-        chat = await bot.get_chat(DATA_STORE_GROUP_ID)
-        pinned_msg = chat.pinned_message
-        
-        target_message = None
-        if pinned_msg and pinned_msg.document and pinned_msg.document.file_name == DB_FILE:
-            target_message = pinned_msg
-        else:
-            # Fallback: Search pinned or recent history if needed
-            print("No pinned database file found. Proceeding with initial or local database.")
-            return
-
-        if target_message:
-            file_info = await bot.get_file(target_message.document.file_id)
-            await bot.download_file(file_info.file_path, DB_FILE)
-            print("✅ Database successfully restored from Data Store Group!")
-    except Exception as e:
-        print(f"[DATABASE RESTORE ERROR] {e}")
-
-async def backup_database():
-    """Uploads the updated database file to the Data Store group and pins it."""
-    if not DATA_STORE_GROUP_ID or not os.path.exists(DB_FILE):
-        return
-    try:
-        input_file = FSInputFile(DB_FILE)
-        sent_msg = await bot.send_document(
-            chat_id=DATA_STORE_GROUP_ID,
-            document=input_file,
-            caption="📦 Auto-Backup: Updated bot_data.db"
-        )
-        try:
-            await bot.pin_chat_message(chat_id=DATA_STORE_GROUP_ID, message_id=sent_msg.message_id)
-        except Exception:
-            pass
-        print("✅ Database successfully backed up to Data Store Group!")
-    except Exception as e:
-        print(f"[DATABASE BACKUP ERROR] {e}")
 
 # =============================================================
 # FSM STATES FOR WITHDRAWAL
@@ -202,8 +143,10 @@ async def check_user_joined(user_id: int) -> bool:
     return joined_otp and joined_disc and joined_back
 
 # =============================================================
-# PERSISTENT DATABASE SETUP
+# DATABASE SETUP
 # =============================================================
+DB_FILE = "/tmp/bot_data.db"
+
 def init_db():
     conn = sqlite3.connect(DB_FILE, timeout=10)
     cursor = conn.cursor()
@@ -248,6 +191,8 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+
+init_db()
 
 def db_add_stock(service: str, country: str, rate: float, numbers: list):
     conn = sqlite3.connect(DB_FILE, timeout=10)
@@ -508,7 +453,6 @@ async def add_number_admin(message: Message):
         return
 
     added_count = db_add_stock(service_name, country_name, rate, new_numbers)
-    await backup_database()
 
     await message.answer(
         f"✅ <b>Added {added_count} number(s) to {service_name} ({country_name}) at rate ${rate:.4f}!</b>",
@@ -542,7 +486,6 @@ async def del_number_admin(message: Message):
         return
     phone = re.sub(r"\D", "", parts[1])
     if db_delete_number(phone):
-        await backup_database()
         await message.answer(f"✅ Number <code>{phone}</code> removed from bot stock & assignments.", parse_mode="HTML")
     else:
         await message.answer(f"❌ Number <code>{phone}</code> not found.", parse_mode="HTML")
@@ -557,7 +500,6 @@ async def clear_service_admin(message: Message):
         return
     srv = parts[1].capitalize()
     removed = db_clear_service(srv)
-    await backup_database()
     await message.answer(f"✅ Removed service <b>{srv}</b> ({removed} total entries purged).", parse_mode="HTML")
 
 # =============================================================
@@ -588,7 +530,6 @@ async def process_withdraw_accept(callback: CallbackQuery):
     amount = float(parts[3])
 
     if db_deduct_balance(user_id, amount):
-        await backup_database()
         await callback.message.edit_text(
             f"✅ <b>WITHDRAWAL APPROVED & PAID!</b>\n\n"
             f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
@@ -616,7 +557,7 @@ async def process_withdraw_reject(callback: CallbackQuery):
     user_id = int(parts[2])
     amount = float(parts[3])
 
-    await callback.message.edit_text(
+await callback.message.edit_text(
         f"❌ <b>WITHDRAWAL REJECTED!</b>\n\n"
         f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
         f"💵 <b>Amount:</b> <code>${amount:.2f}</code>",
@@ -642,7 +583,6 @@ async def start_handler(message: Message):
     if len(text_parts) > 1 and text_parts[1].isdigit():
         referrer_id = int(text_parts[1])
         db_register_referral(user_id, referrer_id)
-        await backup_database()
 
     if not await check_user_joined(user_id):
         join_msg = (
@@ -750,8 +690,6 @@ async def process_number_assignment(callback: CallbackQuery):
             parse_mode="HTML"
         )
         return
-
-    await backup_database()
 
     response = (
         f"🌐 <b>2 Numbers Assigned Successfully!</b>\n\n"
@@ -951,10 +889,9 @@ async def status_handler(message: Message):
     await message.answer(status_msg, parse_mode="HTML")
 
 # =============================================================
-# BACKGROUND WORKERS
+# BACKGROUND WORKER
 # =============================================================
 async def poll_thirdwave_traffic():
-    """Background worker for Thirdwave API."""
     global http_session
     headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}
     while True:
@@ -966,7 +903,7 @@ async def poll_thirdwave_traffic():
                         rows = data.get("rows", [])
                         
                         for item in rows:
-                            msg_id = f"tw_{item.get('id')}"
+                            msg_id = item.get("id")
                             if msg_id in PROCESSED_OTPS:
                                 continue
 
@@ -986,7 +923,7 @@ async def poll_thirdwave_traffic():
                             safe_otp = html.escape(otp_code)
                             safe_body = html.escape(body)
 
-                                group_msg = (
+                            group_msg = (
                                 f"🔥 <b>New OTP Received!</b> ✨\n\n"
                                 f"🌍 <b>Country:</b> {cntry_title}\n"
                                 f"🛒 <b>Service:</b> {srv_title}\n"
