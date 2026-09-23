@@ -986,8 +986,8 @@ async def poll_thirdwave_traffic():
                             safe_otp = html.escape(otp_code)
                             safe_body = html.escape(body)
 
-                            group_msg = (
-                                f"🔥 <b>New OTP Received!</b> [IVAS] ✨\n\n"
+                                group_msg = (
+                                f"🔥 <b>New OTP Received!</b> ✨\n\n"
                                 f"🌍 <b>Country:</b> {cntry_title}\n"
                                 f"🛒 <b>Service:</b> {srv_title}\n"
                                 f"📱 <b>Number:</b> <code>+{masked_phone}</code>\n"
@@ -1002,15 +1002,13 @@ async def poll_thirdwave_traffic():
                                     parse_mode="HTML"
                                 )
                             except Exception as group_err:
-                                print(f"[ERROR] Group Forwarding Failed (IVAS): {group_err}")
+                                print(f"[ERROR] Group Forwarding Failed: {group_err}")
 
                             if user_info:
                                 u_id = user_info["user_id"]
                                 db_add_balance(u_id, otp_rate)
                                 
                                 rewarded_referrer = db_record_otp_and_check_referral(u_id)
-                                await backup_database()
-
                                 if rewarded_referrer:
                                     try:
                                         await bot.send_message(
@@ -1029,11 +1027,9 @@ async def poll_thirdwave_traffic():
                                     )
                                 except Exception:
                                     pass
-                    elif resp.status in (401, 403):
-                        print("[IVAS WORKER ERROR] Session cookie expired! Update IVAS_COOKIE in Render Environment variables.")
         except Exception as e:
-            print(f"[IVAS WORKER ERROR] {e}")
-        await asyncio.sleep(7)
+            print(f"[WORKER ERROR] {e}")
+        await asyncio.sleep(5)
 
 # =============================================================
 # FASTAPI LIFESPAN SETUP
@@ -1043,23 +1039,14 @@ async def lifespan(app: FastAPI):
     global http_session
     http_session = aiohttp.ClientSession()
     
-    # 1. Restore Database from Telegram Data Store Group before initialization
-    await restore_database()
-    
-    # 2. Initialize tables locally
-    init_db()
-
     webhook_url = f"{RENDER_URL}/telegram-webhook"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)
     
-    # Launch both workers concurrently
-    thirdwave_task = asyncio.create_task(poll_thirdwave_traffic())
-    ivasms_task = asyncio.create_task(poll_ivasms_traffic())
+    polling_task = asyncio.create_task(poll_thirdwave_traffic())
     
     yield
     
-    thirdwave_task.cancel()
-    ivasms_task.cancel()
+    polling_task.cancel()
     if http_session and not http_session.closed:
         await http_session.close()
     await bot.delete_webhook()
