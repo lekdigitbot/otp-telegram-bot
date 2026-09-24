@@ -20,7 +20,16 @@ class WithdrawalState(StatesGroup): waiting_for_details, waiting_for_amount = St
 # Helpers & Keyboards
 def mask_phone(p): c = re.sub(r"\D", "", str(p).strip()); return c[:2]+"****"+c[-2:] if len(c)<=7 else c[:5]+"****"+c[-4:]
 def extract_otp(b, f=""): m = re.search(r'\b\d{4,8}\b', b); return str(f).strip() if (f and str(f) != "None") else (m.group(0) if m else "No Code")
-def main_menu(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=a), KeyboardButton(text=b)] for a, b in [("📱 GET NUMBER", "🔴 LIVE TRAFFIC"), ("💸 WITHDRAW", "💰 BALANCE"), ("♾️ REFER AND EARN", "💀 SUPPORT"), ("📊 STATUS")]], resize_keyboard=True)
+def main_menu(): 
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")],
+            [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")],
+            [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")],
+            [KeyboardButton(text="📊 STATUS")]
+        ], 
+        resize_keyboard=True
+)
 def force_join_kb(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, url=u)] for t, u in [("📢 Main Group", OTP_GROUP_LINK), ("💬 Discussion", DISCUSSION_GROUP_LINK), ("🛡️ Backup", BACKUP_GROUP_LINK)]] + [[InlineKeyboardButton(text="✅ I HAVE JOINED ALL", callback_data="check_membership")]])
 
 async def check_user_joined(uid):
