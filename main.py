@@ -7,421 +7,212 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Update
 
-# =============================================================
-# CONFIGURATION
-# =============================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
+BOT_TOKEN, THIRDWAVE_API_KEY, RENDER_URL = os.getenv("BOT_TOKEN"), os.getenv("THIRDWAVE_API_KEY"), os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
+ADMIN_ID, TELEGRAM_GROUP_ID, DISCUSSION_GROUP_ID, BACKUP_GROUP_ID = [int(os.getenv(k, 0) or 0) for k in ["ADMIN_ID", "TELEGRAM_GROUP_ID", "DISCUSSION_GROUP_ID", "BACKUP_GROUP_ID"]]
+OTP_GROUP_LINK, DISCUSSION_GROUP_LINK, BACKUP_GROUP_LINK, SUPPORT_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone"), os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup"), os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup"), os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
+THIRDWAVE_BASE_URL, DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS = "https://clients.thirdwave.im/api/v1", 0.003, 0.25, 0.05
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0) or 0)
-TELEGRAM_GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0)
-DISCUSSION_GROUP_ID = int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0)
-BACKUP_GROUP_ID = int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
+if not BOT_TOKEN or not THIRDWAVE_API_KEY: raise ValueError("❌ Missing Tokens!")
+bot, dp, http_session, PROCESSED_OTPS, DB_FILE = Bot(token=BOT_TOKEN), Dispatcher(storage=MemoryStorage()), None, set(), "/tmp/bot_data.db"
 
-OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone")
-DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup")
-BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
-SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
+class WithdrawalState(StatesGroup): waiting_for_details, waiting_for_amount = State(), State()
 
-THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
-THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
+# Helpers & Keyboards
+def mask_phone(p): c = re.sub(r"\D", "", str(p).strip()); return c[:2]+"****"+c[-2:] if len(c)<=7 else c[:5]+"****"+c[-4:]
+def extract_otp(b, f=""): m = re.search(r'\b\d{4,8}\b', b); return str(f).strip() if (f and str(f) != "None") else (m.group(0) if m else "No Code")
+def main_menu(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=a), KeyboardButton(text=b)] for a, b in [("📱 GET NUMBER", "🔴 LIVE TRAFFIC"), ("💸 WITHDRAW", "💰 BALANCE"), ("♾️ REFER AND EARN", "💀 SUPPORT"), ("📊 STATUS")]], resize_keyboard=True)
+def force_join_kb(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, url=u)] for t, u in [("📢 Main Group", OTP_GROUP_LINK), ("💬 Discussion", DISCUSSION_GROUP_LINK), ("🛡️ Backup", BACKUP_GROUP_LINK)]] + [[InlineKeyboardButton(text="✅ I HAVE JOINED ALL", callback_data="check_membership")]])
 
-DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS = 0.003, 0.25, 0.05
-
-if not BOT_TOKEN or not THIRDWAVE_API_KEY:
-    raise ValueError("❌ Missing required BOT_TOKEN or THIRDWAVE_API_KEY")
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-http_session, PROCESSED_OTPS, DB_FILE = None, set(), "/tmp/bot_data.db"
-
-class WithdrawalState(StatesGroup):
-    waiting_for_details, waiting_for_amount = State(), State()
-
-# =============================================================
-# HELPER FUNCTIONS & KEYBOARDS
-# =============================================================
-def mask_phone_number(phone_number: str) -> str:
-    clean = re.sub(r"\D", "", str(phone_number).strip())
-    return clean[:2] + "****" + clean[-2:] if len(clean) <= 7 else clean[:5] + "****" + clean[-4:]
-
-def extract_otp_code(body: str, fallback_otp: str = "") -> str:
-    if fallback_otp and str(fallback_otp).strip() and str(fallback_otp) != "None":
-        return str(fallback_otp).strip()
-    match = re.search(r'\b\d{4,8}\b', body)
-    return match.group(0) if match else "No Code"
-
-def get_main_menu():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")],
-            [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")],
-            [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")],
-            [KeyboardButton(text="📊 STATUS")]
-        ], resize_keyboard=True
-    )
-
-def get_force_join_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Join Main OTP Group", url=OTP_GROUP_LINK)],
-        [InlineKeyboardButton(text="💬 Join Discussion Group", url=DISCUSSION_GROUP_LINK)],
-        [InlineKeyboardButton(text="🛡️ Join Backup Channel", url=BACKUP_GROUP_LINK)],
-        [InlineKeyboardButton(text="✅ I HAVE JOINED ALL", callback_data="check_membership")]
-    ])
-
-async def is_user_member(user_id: int, chat_id: int) -> bool:
-    if not chat_id: return True
-    try:
-        m = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        return m.status in ["member", "administrator", "creator"]
-    except Exception as e:
-        print(f"[MEMBERSHIP ERROR] Chat {chat_id}, User {user_id}: {e}")
-        return False
-
-async def check_user_joined(user_id: int) -> bool:
-    if user_id == ADMIN_ID: return True
-    return (await is_user_member(user_id, TELEGRAM_GROUP_ID)) and \
-           (await is_user_member(user_id, DISCUSSION_GROUP_ID)) and \
-           (await is_user_member(user_id, BACKUP_GROUP_ID))
-
-# =============================================================
-# DATABASE LAYER
-# =============================================================
-def db_query(query: str, params: tuple = (), fetch: str = None, commit: bool = False):
-    with sqlite3.connect(DB_FILE, timeout=10) as conn:
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        if commit: conn.commit()
-        if fetch == "one": return cursor.fetchone()
-        if fetch == "all": return cursor.fetchall()
-        if fetch == "rowcount": return cursor.rowcount
-
-def init_db():
-    queries = [
-        "CREATE TABLE IF NOT EXISTS stock (id INTEGER PRIMARY KEY AUTOINCREMENT, service TEXT, country TEXT, phone_number TEXT UNIQUE, rate REAL DEFAULT 0.003)",
-        "CREATE TABLE IF NOT EXISTS assignments (phone_number TEXT PRIMARY KEY, user_id INTEGER, service TEXT, country TEXT, rate REAL DEFAULT 0.003)",
-        "CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)",
-        "CREATE TABLE IF NOT EXISTS referrals (user_id INTEGER PRIMARY KEY, referred_by INTEGER, otp_count INTEGER DEFAULT 0, rewarded INTEGER DEFAULT 0)",
-        "CREATE TABLE IF NOT EXISTS otp_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)"
-    ]
-    for q in queries: db_query(q, commit=True)
-
-init_db()
-
-def db_add_stock(service: str, country: str, rate: float, numbers: list) -> int:
-    added = 0
-    for num in numbers:
+async def check_user_joined(uid):
+    if uid == ADMIN_ID: return True
+    for cid in filter(None, [TELEGRAM_GROUP_ID, DISCUSSION_GROUP_ID, BACKUP_GROUP_ID]):
         try:
-            db_query("INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)", (service, country, rate, num), commit=True)
-            added += 1
-        except sqlite3.IntegrityError: pass
-    return added
-
-def db_delete_number(phone_number: str) -> bool:
-    s = db_query("DELETE FROM stock WHERE phone_number = ?", (phone_number,), fetch="rowcount", commit=True)
-    a = db_query("DELETE FROM assignments WHERE phone_number = ?", (phone_number,), fetch="rowcount", commit=True)
-    return (s + a) > 0
-
-def db_clear_service(service: str) -> int:
-    s = db_query("DELETE FROM stock WHERE service = ?", (service,), fetch="rowcount", commit=True)
-    a = db_query("DELETE FROM assignments WHERE service = ?", (service,), fetch="rowcount", commit=True)
-    return s + a
-
-def db_get_services():
-    rows = db_query("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
-    return {row[0]: row[1] for row in rows}
-
-def db_get_countries_for_service(service: str):
-    rows = db_query("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= 2", (service,), fetch="all") or []
-    return {row[0]: (row[2], row[1]) for row in rows}
-
-def db_assign_two_numbers(service: str, country: str, user_id: int):
-    rows = db_query("SELECT phone_number, rate FROM stock WHERE service = ? AND country = ? LIMIT 2", (service, country), fetch="all") or []
-    if len(rows) < 2: return None, 0.0
-    nums, rate = [rows[0][0], rows[1][0]], rows[0][1]
-    for num in nums:
-        db_query("DELETE FROM stock WHERE phone_number = ?", (num,), commit=True)
-        db_query("INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)", (num, user_id, service, country, rate), commit=True)
-    return nums, rate
-
-def db_get_assigned_user(phone_number: str):
-    row = db_query("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (re.sub(r"\D", "", str(phone_number).strip()),), fetch="one")
-    return {"user_id": row[0], "service": row[1], "country": row[2], "rate": row[3]} if row else None
-
-def db_add_balance(user_id: int, amount: float):
-    db_query("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (user_id, amount, amount), commit=True)
-
-def db_deduct_balance(user_id: int, amount: float) -> bool:
-    row = db_query("SELECT balance FROM balances WHERE user_id = ?", (user_id,), fetch="one")
-    if not row or row[0] < amount: return False
-    db_query("UPDATE balances SET balance = balance - ? WHERE user_id = ?", (amount, user_id), commit=True)
+            if (await bot.get_chat_member(cid, uid)).status not in ["member", "administrator", "creator"]: return False
+        except Exception: return False
     return True
 
-def db_get_balance(user_id: int) -> float:
-    row = db_query("SELECT balance FROM balances WHERE user_id = ?", (user_id,), fetch="one")
-    return row[0] if row else 0.0
+# Database Execution Wrapper
+def db(q, p=(), fetch=None, commit=False):
+    with sqlite3.connect(DB_FILE, timeout=10) as c:
+        cur = c.cursor(); cur.execute(q, p)
+        if commit: c.commit()
+        return cur.fetchone() if fetch == "one" else cur.fetchall() if fetch == "all" else cur.rowcount if fetch == "rowcount" else None
 
-def db_register_referral(user_id: int, referrer_id: int):
-    if user_id != referrer_id:
-        try: db_query("INSERT INTO referrals (user_id, referred_by, otp_count, rewarded) VALUES (?, ?, 0, 0)", (user_id, referrer_id), commit=True)
-        except sqlite3.IntegrityError: pass
+for q in ["CREATE TABLE IF NOT EXISTS stock (id INTEGER PRIMARY KEY AUTOINCREMENT, service TEXT, country TEXT, phone_number TEXT UNIQUE, rate REAL DEFAULT 0.003)", "CREATE TABLE IF NOT EXISTS assignments (phone_number TEXT PRIMARY KEY, user_id INTEGER, service TEXT, country TEXT, rate REAL DEFAULT 0.003)", "CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)", "CREATE TABLE IF NOT EXISTS referrals (user_id INTEGER PRIMARY KEY, referred_by INTEGER, otp_count INTEGER DEFAULT 0, rewarded INTEGER DEFAULT 0)", "CREATE TABLE IF NOT EXISTS otp_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)"]: db(q, commit=True)
 
-def db_record_otp_and_check_referral(user_id: int):
-    db_query("INSERT INTO otp_logs (user_id) VALUES (?)", (user_id,), commit=True)
-    row = db_query("SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (user_id,), fetch="one")
-    reward_referrer_id = None
-    if row and row[2] == 0:
-        ref_id, count, _ = row
-        new_count = count + 1
-        if new_count >= 3:
-            db_query("UPDATE referrals SET otp_count = ?, rewarded = 1 WHERE user_id = ?", (new_count, user_id), commit=True)
-            reward_referrer_id = ref_id
-        else:
-            db_query("UPDATE referrals SET otp_count = ? WHERE user_id = ?", (new_count, user_id), commit=True)
-    if reward_referrer_id:
-        db_add_balance(reward_referrer_id, REFERRAL_BONUS)
-        return reward_referrer_id
-    return None
-
-def db_get_referral_stats(user_id: int):
-    row = db_query("SELECT COUNT(*), SUM(rewarded) FROM referrals WHERE referred_by = ?", (user_id,), fetch="one")
-    tot, rwd = (row[0] if row and row[0] else 0), (row[1] if row and row[1] else 0)
-    return tot, rwd * REFERRAL_BONUS
-
-def db_get_weekly_stats(user_id: int):
-    user_weekly = db_query("SELECT COUNT(*) FROM otp_logs WHERE user_id = ? AND timestamp >= datetime('now', '-7 days')", (user_id,), fetch="one")[0]
-    daily = db_query("SELECT date(timestamp), COUNT(*) FROM otp_logs WHERE user_id = ? AND timestamp >= datetime('now', '-7 days') GROUP BY date(timestamp) ORDER BY date(timestamp) DESC", (user_id,), fetch="all")
-    top_3 = db_query("SELECT user_id, COUNT(*) as cnt FROM otp_logs WHERE timestamp >= datetime('now', '-7 days') GROUP BY user_id ORDER BY cnt DESC LIMIT 3", fetch="all")
-    return user_weekly, daily, top_3
-
-# =============================================================
-# ADMIN HANDLERS
-# =============================================================
+# Command Handlers
 @dp.message(F.text.startswith("/addnumber"))
-async def add_number_admin(message: Message):
-    if message.from_user.id != ADMIN_ID: return await message.answer("❌ <b>Unauthorized:</b> Admin only.", parse_mode="HTML")
-    lines = [l.strip() for l in message.text.strip().split("\n") if l.strip()]
-    if not lines: return
-    parts = lines[0].split(maxsplit=3)
-    if len(parts) < 3:
-        return await message.answer("⚠️ <b>Usage Format:</b>\n<code>/addnumber Whatsapp Nigeria 0.005\n2348052055633\n2348052265099</code>", parse_mode="HTML")
-    
-    srv, cntry = parts[1].capitalize(), parts[2].capitalize()
-    try: rate = float(re.sub(r"[^\d.]", "", parts[3])) if len(parts) >= 4 else DEFAULT_OTP_RATE
-    except ValueError: rate = DEFAULT_OTP_RATE
-
-    raw_nums = []
-    for l in lines[1:]: raw_nums.extend(l.split(","))
-    new_nums = [re.sub(r"\D", "", n) for n in raw_nums if re.sub(r"\D", "", n)]
-    if not new_nums: return await message.answer("⚠️ No valid phone numbers found.", parse_mode="HTML")
-
-    added = db_add_stock(srv, cntry, rate, new_nums)
-    await message.answer(f"✅ <b>Added {added} number(s) to {srv} ({cntry}) at rate ${rate:.4f}!</b>", parse_mode="HTML")
-
-    try:
-        await bot.send_message(TELEGRAM_GROUP_ID, f"📢 <b>NEW STOCK UPDATE!</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n💵 <b>Rate:</b> <code>${rate:.4f}</code> / OTP\n📱 <b>New Numbers Added:</b> <code>{added}</code>\n🚀 <i>Press 'GET NUMBER' in bot to request!</i>", parse_mode="HTML")
-    except Exception as e: print(f"[ERROR] Stock announcement failed: {e}")
+async def add_num(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    lines = [l.strip() for l in m.text.strip().split("\n") if l.strip()]
+    if not lines or len(lines[0].split(maxsplit=3)) < 3: return await m.answer("⚠️ Usage: <code>/addnumber Srv Cntry Rate\nNum1,Num2</code>", parse_mode="HTML")
+    p = lines[0].split(maxsplit=3); srv, cntry = p[1].capitalize(), p[2].capitalize()
+    rate = float(re.sub(r"[^\d.]", "", p[3])) if len(p) >= 4 and re.sub(r"[^\d.]", "", p[3]) else DEFAULT_OTP_RATE
+    nums = [re.sub(r"\D", "", n) for l in lines[1:] for n in l.split(",") if re.sub(r"\D", "", n)]
+    added = sum(1 for n in nums if db("INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)", (srv, cntry, rate, n), commit=True))
+    await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
+    try: await bot.send_message(TELEGRAM_GROUP_ID, f"📢 <b>NEW STOCK UPDATE!</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n💵 <b>Rate:</b> <code>${rate:.4f}</code> / OTP\n📱 <b>Added:</b> <code>{added}</code>", parse_mode="HTML")
+    except Exception: pass
 
 @dp.message(F.text.startswith("/delnumber"))
-async def del_number_admin(message: Message):
-    if message.from_user.id != ADMIN_ID: return
-    parts = message.text.split()
-    if len(parts) < 2: return await message.answer("⚠️ Usage: <code>/delnumber 2348052055633</code>", parse_mode="HTML")
-    phone = re.sub(r"\D", "", parts[1])
-    res = "removed from bot stock & assignments." if db_delete_number(phone) else "not found."
-    await message.answer(f"ℹ️ Number <code>{phone}</code> {res}", parse_mode="HTML")
+async def del_num(m: Message):
+    if m.from_user.id == ADMIN_ID and len(m.text.split()) > 1:
+        p = re.sub(r"\D", "", m.text.split()[1])
+        r = (db("DELETE FROM stock WHERE phone_number = ?", (p,), fetch="rowcount", commit=True) or 0) + (db("DELETE FROM assignments WHERE phone_number = ?", (p,), fetch="rowcount", commit=True) or 0)
+        await m.answer(f"✅ Removed {p}" if r else "❌ Not found", parse_mode="HTML")
 
 @dp.message(F.text.startswith("/clearservice"))
-async def clear_service_admin(message: Message):
-    if message.from_user.id != ADMIN_ID: return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2: return await message.answer("⚠️ Usage: <code>/clearservice Whatsapp</code>", parse_mode="HTML")
-    srv = parts[1].capitalize()
-    await message.answer(f"✅ Removed service <b>{srv}</b> ({db_clear_service(srv)} total entries purged).", parse_mode="HTML")
+async def clear_srv(m: Message):
+    if m.from_user.id == ADMIN_ID and len(m.text.split(maxsplit=1)) > 1:
+        s = m.text.split(maxsplit=1)[1].capitalize()
+        r = (db("DELETE FROM stock WHERE service = ?", (s,), fetch="rowcount", commit=True) or 0) + (db("DELETE FROM assignments WHERE service = ?", (s,), fetch="rowcount", commit=True) or 0)
+        await m.answer(f"✅ Cleared {s} ({r} entries)", parse_mode="HTML")
 
-# =============================================================
-# CALLBACK HANDLERS
-# =============================================================
+# Callbacks
 @dp.callback_query(F.data == "check_membership")
-async def process_membership_check(callback: CallbackQuery):
-    if await check_user_joined(callback.from_user.id):
-        await callback.answer("✅ Thank you! You have joined all channels.", show_alert=True)
-        try: await callback.message.delete()
+async def cb_check(c: CallbackQuery):
+    if await check_user_joined(c.from_user.id):
+        await c.answer("✅ Thank you!", show_alert=True)
+        try: await c.message.delete()
         except Exception: pass
-        await callback.message.answer(f"👋 Welcome <b>{callback.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!", reply_markup=get_main_menu(), parse_mode="HTML")
+        await c.message.answer(f"👋 Welcome <b>{c.from_user.first_name}</b>!", reply_markup=main_menu(), parse_mode="HTML")
+    else: await c.answer("❌ Join required groups first!", show_alert=True)
+
+@dp.callback_query(F.data.startswith(("wd_accept_", "wd_reject_")))
+async def cb_wd(c: CallbackQuery):
+    if c.from_user.id != ADMIN_ID: return
+    act, _, uid, amt = c.data.split("_"); uid, amt = int(uid), float(amt)
+    if act == "wd_accept":
+        bal = db("SELECT balance FROM balances WHERE user_id = ?", (uid,), fetch="one")
+        if bal and bal[0] >= amt:
+            db("UPDATE balances SET balance = balance - ? WHERE user_id = ?", (amt, uid), commit=True)
+            await c.message.edit_text(f"✅ APPROVED & PAID! User: <code>{uid}</code> (${amt:.2f})", parse_mode="HTML")
+            try: await bot.send_message(uid, f"🎉 Withdrawal of <b>${amt:.2f}</b> approved!", parse_mode="HTML")
+            except Exception: pass
+        else: await c.message.edit_text("❌ Failed: Insufficient balance.", parse_mode="HTML")
     else:
-        await callback.answer("❌ You haven't joined all required groups/channels yet!", show_alert=True)
-
-@dp.callback_query(F.data.startswith("wd_accept_"))
-async def process_withdraw_accept(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return await callback.answer("❌ Unauthorized action.", show_alert=True)
-    _, _, u_id, amt = callback.data.split("_")
-    u_id, amt = int(u_id), float(amt)
-
-    if db_deduct_balance(u_id, amt):
-        await callback.message.edit_text(f"✅ <b>WITHDRAWAL APPROVED & PAID!</b>\n\n👤 <b>User ID:</b> <code>{u_id}</code>\n💵 <b>Amount Deducted:</b> <code>${amt:.2f}</code>", parse_mode="HTML")
-        try: await bot.send_message(u_id, f"🎉 <b>Withdrawal Approved!</b>\n\nYour withdrawal of <b>${amt:.2f}</b> has been processed successfully.", parse_mode="HTML")
+        await c.message.edit_text(f"❌ REJECTED! User: <code>{uid}</code> (${amt:.2f})", parse_mode="HTML")
+        try: await bot.send_message(uid, f"❌ Withdrawal request for <b>${amt:.2f}</b> rejected.", parse_mode="HTML")
         except Exception: pass
-    else:
-        await callback.message.edit_text("❌ <b>Failed:</b> User has insufficient balance.", parse_mode="HTML")
 
-@dp.callback_query(F.data.startswith("wd_reject_"))
-async def process_withdraw_reject(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return await callback.answer("❌ Unauthorized action.", show_alert=True)
-    _, _, u_id, amt = callback.data.split("_")
-    u_id, amt = int(u_id), float(amt)
-    await callback.message.edit_text(f"❌ <b>WITHDRAWAL REJECTED!</b>\n\n👤 <b>User ID:</b> <code>{u_id}</code>\n💵 <b>Amount:</b> <code>${amt:.2f}</code>", parse_mode="HTML")
-    try: await bot.send_message(u_id, f"❌ <b>Withdrawal Rejected!</b>\n\nYour request for <b>${amt:.2f}</b> was rejected by admin.", parse_mode="HTML")
-    except Exception: pass
-
-# =============================================================
-# USER HANDLERS
-# =============================================================
+# User Services & Logic
 @dp.message(F.text.startswith("/start"))
-async def start_handler(message: Message):
-    parts = message.text.split()
-    if len(parts) > 1 and parts[1].isdigit(): db_register_referral(message.from_user.id, int(parts[1]))
-    if not await check_user_joined(message.from_user.id):
-        return await message.answer(f"⚠️ <b>Access Restricted!</b>\n\nHello <b>{message.from_user.first_name}</b>, please join all our channels to use the bot:", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
-    await message.answer(f"👋 Welcome <b>{message.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!", reply_markup=get_main_menu(), parse_mode="HTML")
+async def start_h(m: Message):
+    if len(m.text.split()) > 1 and m.text.split()[1].isdigit() and m.from_user.id != int(m.text.split()[1]):
+        try: db("INSERT INTO referrals (user_id, referred_by) VALUES (?, ?)", (m.from_user.id, int(m.text.split()[1])), commit=True)
+        except Exception: pass
+    if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Access Restricted! Join all groups:", reply_markup=force_join_kb(), parse_mode="HTML")
+    await m.answer(f"👋 Welcome <b>{m.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!", reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(F.text == "💀 SUPPORT")
-async def support_handler(message: Message):
-    await message.answer("🛠️ <b>Need help?</b>\nClick below to reach support:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Contact Support", url=SUPPORT_LINK)]]), parse_mode="HTML")
+async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK)]]))
 
 @dp.message(F.text == "📱 GET NUMBER")
-async def show_services_handler(message: Message):
-    if not await check_user_joined(message.from_user.id): return await message.answer("⚠️ Please join required channels first!", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
-    services = db_get_services()
-    if not services: return await message.answer("⚠️ <b>Out of Stock!</b> No service available right now.", reply_markup=get_main_menu(), parse_mode="HTML")
-    btn = [[InlineKeyboardButton(text=f"🔹 {s} ({c} total)", callback_data=f"s_{s}")] for s, c in services.items()]
-    await message.answer("📲 <b>Select a service:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=btn), parse_mode="HTML")
+async def srv_h(m: Message):
+    if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
+    rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
+    if not rows: return await m.answer("⚠️ Out of stock!", reply_markup=main_menu())
+    await m.answer("📲 Select service:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🔹 {s} ({c})", callback_data=f"s_{s}")] for s, c in rows]), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("s_"))
-async def process_service_selection(callback: CallbackQuery):
-    if not await check_user_joined(callback.from_user.id): return await callback.answer("⚠️ Join all groups first!", show_alert=True)
-    try: await callback.answer()
-    except Exception: pass
-    srv = callback.data[2:]
-    countries = db_get_countries_for_service(srv)
-    if not countries: return await callback.message.answer(f"⚠️ Out of stock for <b>{html.escape(srv)}</b>.", parse_mode="HTML")
-    btn = [[InlineKeyboardButton(text=f"🌍 {cnt} (${r:.4f}/OTP) - {c} avail", callback_data=f"c_{srv}_{cnt}")] for cnt, (c, r) in countries.items()]
-    await callback.message.answer(f"🌍 <b>Select Country for {html.escape(srv)}:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=btn), parse_mode="HTML")
+async def srv_sel(c: CallbackQuery):
+    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
+    srv = c.data[2:]; rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= 2", (srv,), fetch="all") or []
+    if not rows: return await c.message.answer(f"⚠️ Out of stock for {html.escape(srv)}.")
+    await c.message.answer(f"🌍 Select Country for {html.escape(srv)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🌍 {cnt} (${r:.4f}) - {cnt_cnt} avail", callback_data=f"c_{srv}_{cnt}")] for cnt, r, cnt_cnt in rows]), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("c_"))
-async def process_number_assignment(callback: CallbackQuery):
-    if not await check_user_joined(callback.from_user.id): return await callback.answer("⚠️ Join all groups first!", show_alert=True)
-    try: await callback.answer("Assigning numbers...")
-    except Exception: pass
-    parts = callback.data.split("_", 2)
-    if len(parts) < 3: return
-    srv, cntry, u_id = parts[1], parts[2], callback.from_user.id
-    nums, rate = db_assign_two_numbers(srv, cntry, u_id)
-    if not nums: return await callback.message.answer(f"⚠️ <b>Out of Stock!</b> Need at least 2 numbers available for <b>{html.escape(srv)} ({html.escape(cntry)})</b>.", parse_mode="HTML")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 JOIN OTP GROUP STREAM ⚡", url=OTP_GROUP_LINK)]])
-    await callback.message.answer(f"🌐 <b>2 Numbers Assigned!</b>\n\n🔹 <b>Service:</b> {html.escape(srv)}\n🌍 <b>Country:</b> {html.escape(cntry)}\n📱 <b>Number 1:</b> <code>{nums[0]}</code>\n📱 <b>Number 2:</b> <code>{nums[1]}</code>\n\n⏳ <b>Waiting for OTPs...</b>\n💰 <b>Rate:</b> <code>${rate:.4f}</code> / OTP", reply_markup=kb, parse_mode="HTML")
+async def num_assign(c: CallbackQuery):
+    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
+    _, srv, cntry = c.data.split("_", 2); rows = db("SELECT phone_number, rate FROM stock WHERE service = ? AND country = ? LIMIT 2", (srv, cntry), fetch="all") or []
+    if len(rows) < 2: return await c.message.answer("⚠️ Out of stock!")
+    nums, rate = [rows[0][0], rows[1][0]], rows[0][1]
+    for n in nums:
+        db("DELETE FROM stock WHERE phone_number = ?", (n,), commit=True)
+        db("INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)", (n, c.from_user.id, srv, cntry, rate), commit=True)
+    await c.message.answer(f"🌐 <b>2 Numbers Assigned!</b>\n🔹 <b>Service:</b> {html.escape(srv)}\n🌍 <b>Country:</b> {html.escape(cntry)}\n📱 <b>1:</b> <code>{nums[0]}</code>\n📱 <b>2:</b> <code>{nums[1]}</code>\n💰 <b>Rate:</b> <code>${rate:.4f}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 STREAM", url=OTP_GROUP_LINK)]]), parse_mode="HTML")
 
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
-async def live_traffic_handler(message: Message):
-    if not await check_user_joined(message.from_user.id): return await message.answer("⚠️ Join all required groups first!", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
-    if not http_session or http_session.closed: return await message.answer("⚠️ Server session starting up, try again soon.", reply_markup=get_main_menu())
-    headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "Accept": "application/json"}
+async def traffic_h(m: Message):
+    if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
+    if not http_session or http_session.closed: return await m.answer("⚠️ Session starting...", reply_markup=main_menu())
     try:
-        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=5", headers=headers) as resp:
-            if resp.status == 200:
-                rows = (await resp.json()).get("rows", [])
-                if not rows: return await message.answer("ℹ️ No recent traffic found.", reply_markup=get_main_menu())
-                txt = "🔴 <b>Recent 5 OTP Traffic:</b>\n\n" + "".join([f"📱 <b>Num:</b> <code>{html.escape(mask_phone_number(i.get('destinationNumber', '')))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(extract_otp_code(str(i.get('messageBody', '')), i.get('otp')))}</code>\n💬 <code>{html.escape(str(i.get('messageBody', ''))[:40])}</code>\n───\n" for i in rows[:5]])
-                await message.answer(txt, reply_markup=get_main_menu(), parse_mode="HTML")
-            else: await message.answer(f"❌ <b>Traffic Error ({resp.status})</b>", reply_markup=get_main_menu(), parse_mode="HTML")
-    except Exception as err: await message.answer(f"❌ <b>Connection Error:</b> <code>{html.escape(str(err))}</code>", parse_mode="HTML")
+        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=5", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}) as r:
+            if r.status == 200:
+                rows = (await r.json()).get("rows", [])
+                txt = "🔴 <b>Recent 5 Traffic:</b>\n\n" + "".join([f"📱 <b>Num:</b> <code>{html.escape(mask_phone(i.get('destinationNumber','')))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(extract_otp(str(i.get('messageBody','')), i.get('otp')))}</code>\n💬 <code>{html.escape(str(i.get('messageBody',''))[:40])}</code>\n───\n" for i in rows[:5]])
+                await m.answer(txt or "No traffic.", reply_markup=main_menu(), parse_mode="HTML")
+    except Exception as e: await m.answer(f"❌ Error: {e}")
 
 @dp.message(F.text == "💰 BALANCE")
-async def balance_handler(message: Message):
-    if not await check_user_joined(message.from_user.id): return await message.answer("⚠️ Join all groups first!", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
-    u_id = message.from_user.id
-    await message.answer(f"👤 <b>User ID:</b> <code>{u_id}</code>\n💵 <b>Balance:</b> <code>${db_get_balance(u_id):.4f}</code>", parse_mode="HTML")
+async def bal_h(m: Message):
+    row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one")
+    await m.answer(f"👤 <b>ID:</b> <code>{m.from_user.id}</code>\n💵 <b>Balance:</b> <code>${(row[0] if row else 0.0):.4f}</code>", parse_mode="HTML")
 
 @dp.message(F.text == "♾️ REFER AND EARN")
-async def referral_handler(message: Message):
-    if not await check_user_joined(message.from_user.id): return await message.answer("⚠️ Join all groups first!", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
-    u_id = message.from_user.id
-    bot_info = await bot.get_me()
-    tot, earned = db_get_referral_stats(u_id)
-    await message.answer(f"♾️ <b>REFERRAL PROGRAM</b> ♾️\n\n🔗 <b>Your Link:</b>\n<code>https://t.me/{bot_info.username}?start={u_id}</code>\n\n👥 <b>Total Invited:</b> <code>{tot}</code>\n💵 <b>Earned Bonus:</b> <code>${earned:.2f}</code>\n\n<i>Note: Invited users must request at least 3 OTPs to qualify!</i>", parse_mode="HTML")
+async def ref_h(m: Message):
+    bot_info = await bot.get_me(); row = db("SELECT COUNT(*), SUM(rewarded) FROM referrals WHERE referred_by = ?", (m.from_user.id,), fetch="one")
+    await m.answer(f"♾️ <b>REFERRALS</b>\n\n🔗 <code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n👥 <b>Invited:</b> <code>{(row[0] if row and row[0] else 0)}</code>\n💵 <b>Earned:</b> <code>${(row[1] if row and row[1] else 0) * REFERRAL_BONUS:.2f}</code>", parse_mode="HTML")
 
 @dp.message(F.text == "💸 WITHDRAW")
-async def withdraw_start(message: Message, state: FSMContext):
-    if not await check_user_joined(message.from_user.id): return await message.answer("⚠️ Join all groups first!", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
-    bal = db_get_balance(message.from_user.id)
-    if bal < MIN_WITHDRAWAL: return await message.answer(f"❌ <b>Insufficient Balance!</b>\n\n💵 <b>Balance:</b> <code>${bal:.2f}</code>\n⚠️ <b>Min Withdrawal:</b> <code>${MIN_WITHDRAWAL:.2f}</code>", parse_mode="HTML")
-    await state.set_state(WithdrawalState.waiting_for_details)
-    await message.answer(f"💵 <b>Your Balance:</b> <code>${bal:.2f}</code>\n\nPlease send your payment details (Bank, Name, Crypto):", parse_mode="HTML")
+async def wd_start(m: Message, state: FSMContext):
+    row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one"); bal = row[0] if row else 0.0
+    if bal < MIN_WITHDRAWAL: return await m.answer(f"❌ Balance too low! Bal: <code>${bal:.2f}</code> (Min: <code>${MIN_WITHDRAWAL:.2f}</code>)", parse_mode="HTML")
+    await state.set_state(WithdrawalState.waiting_for_details); await m.answer("💵 Send your payment details (Bank/Crypto):", parse_mode="HTML")
 
 @dp.message(WithdrawalState.waiting_for_details)
-async def withdraw_details_received(message: Message, state: FSMContext):
-    await state.update_data(details=message.text.strip())
-    await state.set_state(WithdrawalState.waiting_for_amount)
-    await message.answer(f"Enter the <b>Amount ($)</b> to withdraw (Min: <code>${MIN_WITHDRAWAL:.2f}</code>):", parse_mode="HTML")
+async def wd_dtls(m: Message, state: FSMContext):
+    await state.update_data(details=m.text.strip()); await state.set_state(WithdrawalState.waiting_for_amount)
+    await m.answer(f"Enter Amount ($) (Min: <code>${MIN_WITHDRAWAL:.2f}</code>):", parse_mode="HTML")
 
 @dp.message(WithdrawalState.waiting_for_amount)
-async def withdraw_amount_received(message: Message, state: FSMContext):
-    u_id, bal = message.from_user.id, db_get_balance(message.from_user.id)
-    try: amt = float(message.text.strip())
-    except ValueError: return await message.answer("⚠️ Invalid amount. Try again:")
-    if amt < MIN_WITHDRAWAL or amt > bal: return await message.answer(f"⚠️ Invalid/Insufficient amount! Bal: <code>${bal:.2f}</code>", parse_mode="HTML")
-
-    details = (await state.get_data()).get("details")
-    await state.clear()
-    await message.answer("✅ <b>Withdrawal Request Submitted!</b>", parse_mode="HTML")
-    admin_btn = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{u_id}_{amt}"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{u_id}_{amt}")]])
-    try: await bot.send_message(ADMIN_ID, f"🔔 <b>NEW WITHDRAWAL REQUEST!</b>\n\n👤 <b>User:</b> {message.from_user.first_name} (<code>{u_id}</code>)\n💵 <b>Amount:</b> <code>${amt:.2f}</code>\n🏦 <b>Details:</b>\n<code>{details}</code>", reply_markup=admin_btn, parse_mode="HTML")
-    except Exception as e: print(f"[ERROR] Admin notification failed: {e}")
+async def wd_amt(m: Message, state: FSMContext):
+    row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one"); bal = row[0] if row else 0.0
+    try: amt = float(m.text.strip())
+    except ValueError: return await m.answer("⚠️ Enter valid number:")
+    if amt < MIN_WITHDRAWAL or amt > bal: return await m.answer(f"⚠️ Invalid/Insufficient amount! Max: <code>${bal:.2f}</code>", parse_mode="HTML")
+    dtls = (await state.get_data()).get("details"); await state.clear(); await m.answer("✅ Request Submitted!")
+    try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}")]]) , parse_mode="HTML")
+    except Exception: pass
 
 @dp.message(F.text == "📊 STATUS")
-async def status_handler(message: Message):
-    if not await check_user_joined(message.from_user.id): return await message.answer("⚠️ Join all groups first!", reply_markup=get_force_join_keyboard(), parse_mode="HTML")
-    u_cnt, daily, top_3 = db_get_weekly_stats(message.from_user.id)
-    daily_txt = "".join([f"📅 <b>{d}:</b> <code>{c}</code> OTPs\n" for d, c in daily]) if daily else "<i>No daily records.</i>\n"
-    medals = ["🥇 1st", "🥈 2nd", "🥉 3rd"]
-    lb_txt = "".join([f"{medals[i]}: User <code>{uid}</code> — <b>{c} OTPs</b>\n" for i, (uid, c) in enumerate(top_3)]) if top_3 else "<i>No traffic recorded.</i>\n"
-    await message.answer(f"📊 <b>WEEKLY STATUS & LEADERBOARD</b> 📊\n\n📱 <b>Your Total (7 Days):</b> <code>{u_cnt}</code> OTPs\n\n🗓️ <b>Daily Breakdown:</b>\n{daily_txt}\n🏆 <b>Top Performers:</b>\n{lb_txt}", parse_mode="HTML")
+async def status_h(m: Message):
+    uid = m.from_user.id
+    u_cnt = db("SELECT COUNT(*) FROM otp_logs WHERE user_id = ? AND timestamp >= datetime('now', '-7 days')", (uid,), fetch="one")[0]
+    daily = db("SELECT date(timestamp), COUNT(*) FROM otp_logs WHERE user_id = ? AND timestamp >= datetime('now', '-7 days') GROUP BY date(timestamp)", (uid,), fetch="all") or []
+    top_3 = db("SELECT user_id, COUNT(*) as c FROM otp_logs WHERE timestamp >= datetime('now', '-7 days') GROUP BY user_id ORDER BY c DESC LIMIT 3", fetch="all") or []
+    await m.answer(f"📊 <b>STATUS & LEADERBOARD</b>\n\n📱 <b>Total (7d):</b> <code>{u_cnt}</code>\n\n🗓️ <b>Daily:</b>\n" + "".join([f"📅 {d}: <code>{c}</code>\n" for d, c in daily]) + "\n🏆 <b>Top Rank:</b>\n" + "".join([f"{['🥇','🥈','🥉'][i]}: User <code>{u}</code> — <b>{c} OTPs</b>\n" for i, (u, c) in enumerate(top_3)]), parse_mode="HTML")
 
-# =============================================================
-# BACKGROUND WORKER & LIFESPAN
-# =============================================================
-async def poll_thirdwave_traffic():
-    headers = {"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}
+# Worker & Lifespan
+async def poll_traffic():
     grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
     while True:
         try:
             if http_session and not http_session.closed:
-                async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=15", headers=headers) as resp:
-                    if resp.status == 200:
-                        for item in (await resp.json()).get("rows", []):
-                            msg_id = item.get("id")
-                            if msg_id in PROCESSED_OTPS: continue
-                            PROCESSED_OTPS.add(msg_id)
-
+                async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=15", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}) as r:
+                    if r.status == 200:
+                        for item in (await r.json()).get("rows", []):
+                            mid = item.get("id")
+                            if mid in PROCESSED_OTPS: continue
+                            PROCESSED_OTPS.add(mid)
                             phone, body = str(item.get("destinationNumber", "")).strip(), str(item.get("messageBody", ""))
-                            otp_code = extract_otp_code(body, item.get("otp"))
-                            u_info = db_get_assigned_user(phone)
-
-                            srv = u_info["service"] if u_info else "OTP"
-                            cntry = u_info["country"] if u_info else "Service"
-                            rate = u_info["rate"] if u_info else DEFAULT_OTP_RATE
-
-                            try:
-                                await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received!</b> ✨\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone_number(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Full Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=grp_kb, parse_mode="HTML")
-                            except Exception as ge: print(f"[FORWARD ERROR] {ge}")
-
-                            if u_info:
-                                uid = u_info["user_id"]
-                                db_add_balance(uid, rate)
-                                ref_id = db_record_otp_and_check_referral(uid)
-                                if ref_id:
-                                    try: await bot.send_message(ref_id, f"🎉 <b>Referral Bonus Credited!</b> Your referred user completed 3 OTPs. Earned <b>${REFERRAL_BONUS:.2f}</b>!", parse_mode="HTML")
-                                    except Exception: pass
+                            otp_code, clean_num = extract_otp(body, item.get("otp")), re.sub(r"\D", "", phone)
+                            row = db("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), fetch="one")
+                            srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
+                            try: await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received!</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=grp_kb, parse_mode="HTML")
+                            except Exception: pass
+                            if row:
+                                uid = row[0]
+                                db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (uid, rate, rate), commit=True)
+                                db("INSERT INTO otp_logs (user_id) VALUES (?)", (uid,), commit=True)
+                                ref = db("SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (uid,), fetch="one")
+                                if ref and ref[2] == 0:
+                                    if ref[1] + 1 >= 3:
+                                        db("UPDATE referrals SET otp_count = 3, rewarded = 1 WHERE user_id = ?", (uid,), commit=True)
+                                        db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
+                                        try: await bot.send_message(ref[0], f"🎉 Referral Bonus Credited! Earned <b>${REFERRAL_BONUS:.2f}</b>!", parse_mode="HTML")
+                                        except Exception: pass
+                                    else: db("UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
                                 try: await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(phone)}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
                                 except Exception: pass
         except Exception as e: print(f"[WORKER ERROR] {e}")
@@ -429,25 +220,17 @@ async def poll_thirdwave_traffic():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global http_session
-    http_session = aiohttp.ClientSession()
+    global http_session; http_session = aiohttp.ClientSession()
     await bot.set_webhook(f"{RENDER_URL}/telegram-webhook", drop_pending_updates=True)
-    polling_task = asyncio.create_task(poll_thirdwave_traffic())
+    task = asyncio.create_task(poll_traffic())
     yield
-    polling_task.cancel()
+    task.cancel()
     if http_session and not http_session.closed: await http_session.close()
-    await bot.delete_webhook()
-    await bot.session.close()
+    await bot.delete_webhook(); await bot.session.close()
 
 app = FastAPI(lifespan=lifespan)
-
 @app.post("/")
 @app.post("/telegram-webhook")
-async def process_telegram_update(request: Request):
-    data = await request.json()
-    await dp.feed_update(bot, Update.model_validate(data, context={"bot": bot}))
-    return {"status": "ok"}
-
+async def process_update(r: Request): await dp.feed_update(bot, Update.model_validate(await r.json(), context={"bot": bot})); return {"status": "ok"}
 @app.get("/")
-async def health_check():
-    return {"status": "bot is running"}
+async def health(): return {"status": "bot is running"}
