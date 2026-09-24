@@ -557,7 +557,7 @@ async def process_withdraw_reject(callback: CallbackQuery):
     user_id = int(parts[2])
     amount = float(parts[3])
 
-await callback.message.edit_text(
+    await callback.message.edit_text(
         f"❌ <b>WITHDRAWAL REJECTED!</b>\n\n"
         f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
         f"💵 <b>Amount:</b> <code>${amount:.2f}</code>",
