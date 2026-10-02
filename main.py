@@ -93,7 +93,7 @@ for q in init_queries:
 def mask_phone(p): clean = re.sub(r"\D", "", str(p).strip()); return clean[:2]+"****"+clean[-2:] if len(clean)<=7 else clean[:5]+"****"+clean[-4:]
 def extract_otp(b, f=""): match = re.search(r'\b\d{4,8}\b', str(b)); return str(f).strip() if (f and str(f) != "None") else (match.group(0) if match else "No Code")
 def main_menu(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")], [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")], [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")], [KeyboardButton(text="📊 STATUS")]], resize_keyboard=True)
-def force_join_kb(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK)], [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK)], [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK)], [InlineKeyboardButton(text="✅ I HAVE JOINED ALL", callback_data="check_membership")]])
+def force_join_kb(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK)], [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK)], [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK)], [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership")]])
 
 async def check_user_joined(uid):
     if uid == ADMIN_ID: return True
@@ -190,7 +190,7 @@ async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=
 async def srv_h(m: Message):
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
     rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
-    if not rows: return await m.answer("⚠️ Out of stock!", reply_markup=main_menu())
+    if not rows: return await m.answer("⚠️ Out of stock kindly contact support if not update in 5min!", reply_markup=main_menu())
     await m.answer("📲 Select service:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🔹 {s} ({c})", callback_data=f"s_{s}")] for s, c in rows]), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("s_"))
