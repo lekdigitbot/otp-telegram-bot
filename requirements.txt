@@ -1,6 +1,5 @@
-aiogram
 fastapi
 uvicorn
+aiogram
 aiohttp
-pydantic
-
+psycopg2-binary
