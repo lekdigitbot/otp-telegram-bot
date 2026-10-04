@@ -17,6 +17,7 @@ except ImportError:
 # Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
+IPRN_API_KEY = os.getenv("IPRN_API_KEY")  # Added IPRN.pro API Key
 DATABASE_URL = os.getenv("DATABASE_URL", "")     # postgresql://postgres:password@...
 RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
@@ -31,10 +32,11 @@ BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbacku
 SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
+IPRN_BASE_URL = "https://api.iprn.pro/api/stock/public"
 DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS = 0.003, 0.25, 0.05
 
-if not BOT_TOKEN or not THIRDWAVE_API_KEY:
-    raise ValueError("❌ Missing BOT_TOKEN or THIRDWAVE_API_KEY!")
+if not BOT_TOKEN:
+    raise ValueError("❌ Missing BOT_TOKEN!")
 
 bot, dp = Bot(token=BOT_TOKEN), Dispatcher(storage=MemoryStorage())
 http_session, PROCESSED_OTPS, DB_FILE = None, set(), "/tmp/bot_data.db"
@@ -109,7 +111,7 @@ async def check_user_joined(uid):
 async def add_num(m: Message):
     if m.from_user.id != ADMIN_ID: return
     lines = [l.strip() for l in m.text.strip().split("\n") if l.strip()]
-    if len(lines) < 1 or len(lines[0].split(maxsplit=3)) < 3: return await m.answer("⚠️ Usage: <code>/addnumber Srv Cntry Rate\nNum1,Num2</code>", parse_mode="HTML")
+    if len(lines) < 1 or len(lines[0].split(maxsplit=3)) < 3: return await m.answer("⚠️️ Usage: <code>/addnumber Srv Cntry Rate\nNum1,Num2</code>", parse_mode="HTML")
     p = lines[0].split(maxsplit=3); srv, cntry = p[1].capitalize(), p[2].capitalize()
     rate = float(re.sub(r"[^\d.]", "", p[3])) if len(p) >= 4 and re.sub(r"[^\d.]", "", p[3]) else DEFAULT_OTP_RATE
     raw = [n for l in lines[1:] for n in l.split(",")]
@@ -218,14 +220,46 @@ async def num_assign(c: CallbackQuery):
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def traffic_h(m: Message):
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
-    if not http_session or http_session.closed: return await m.answer("⚠️ Session starting...", reply_markup=main_menu())
-    try:
-        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=5", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}) as r:
-            if r.status == 200:
-                rows = (await r.json()).get("rows", [])
-                txt = "🔴 <b>Recent 5 Traffic:</b>\n\n" + "".join([f"📱 <b>Num:</b> <code>{html.escape(mask_phone(i.get('destinationNumber','')))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(extract_otp(str(i.get('messageBody','')), i.get('otp')))}</code>\n💬 <code>{html.escape(str(i.get('messageBody',''))[:40])}</code>\n───\n" for i in rows[:5]])
-                await m.answer(txt or "No traffic.", reply_markup=main_menu(), parse_mode="HTML")
-    except Exception as e: await m.answer(f"❌ Error: {e}")
+    if not http_session or http_session.closed: return await m.answer("⚠️️ Session starting...", reply_markup=main_menu())
+    
+    combined_rows = []
+
+    # 1. Fetch Thirdwave Traffic
+    if THIRDWAVE_API_KEY:
+        try:
+            async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=5", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}) as r:
+                if r.status == 200:
+                    for i in (await r.json()).get("rows", []):
+                        combined_rows.append({
+                            "phone": str(i.get("destinationNumber", "")),
+                            "msg": str(i.get("messageBody", "")),
+                            "otp": extract_otp(str(i.get("messageBody", "")), i.get("otp"))
+                        })
+        except Exception: pass
+
+    # 2. Fetch IPRN.pro Traffic
+    if IPRN_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+            async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=5", headers=headers) as r:
+                if r.status == 200:
+                    res_data = await r.json()
+                    iprn_items = res_data.get("data", []) if isinstance(res_data, dict) else []
+                    for i in iprn_items:
+                        combined_rows.append({
+                            "phone": str(i.get("b_number", "")),
+                            "msg": str(i.get("message", "")),
+                            "otp": extract_otp(str(i.get("message", "")))
+                        })
+        except Exception: pass
+
+    txt = "🔴 <b>Recent Live Traffic:</b>\n\n" + "".join([
+        f"📱 <b>Num:</b> <code>{html.escape(mask_phone(i['phone']))}</code>\n"
+        f"🔑 <b>OTP:</b> <code>{html.escape(i['otp'])}</code>\n"
+        f"💬 <code>{html.escape(i['msg'][:40])}</code>\n───\n" 
+        for i in combined_rows[:5]
+    ])
+    await m.answer(txt if combined_rows else "No traffic.", reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(F.text == "💰 BALANCE")
 async def bal_h(m: Message):
@@ -277,56 +311,91 @@ async def status_h(m: Message):
     medals = ["🥇", "🥈", "🥉"]
     await m.answer(f"📊 <b>STATUS & LEADERBOARD</b>\n\n📱 <b>Total (7d):</b> <code>{u_cnt}</code>\n\n🗓️ <b>Daily:</b>\n" + "".join([f"📅 {d}: <code>{c}</code>\n" for d, c in daily]) + "\n🏆 <b>Top Rank:</b>\n" + "".join([f"{medals[i]}: User <code>{u}</code> — <b>{c} OTPs</b>\n" for i, (u, c) in enumerate(top_3)]), parse_mode="HTML")
 
-# --- THIRDWAVE WORKER ---
+# --- DUAL PANEL WORKER (THIRDWAVE + IPRN.PRO) ---
+async def process_incoming_otp(phone, body, raw_otp=""):
+    """Helper to process matched OTPs from any provider."""
+    otp_code = extract_otp(body, raw_otp)
+    clean_num = re.sub(r"\D", "", str(phone))
+
+    row = db("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), fetch="one")
+    srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
+
+    grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
+    
+    try:
+        await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=grp_kb, parse_mode="HTML")
+    except Exception: pass
+
+    if row:
+        uid = row[0]
+        if DATABASE_URL and HAS_PSYCOPG2:
+            db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (uid, rate, rate), commit=True)
+        else:
+            db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (uid, rate, rate), commit=True)
+        
+        db("INSERT INTO otp_logs (user_id) VALUES (?)", (uid,), commit=True)
+        
+        ref = db("SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (uid,), fetch="one")
+        if ref and ref[2] == 0:
+            if ref[1] + 1 >= 3:
+                db("UPDATE referrals SET otp_count = 3, rewarded = 1 WHERE user_id = ?", (uid,), commit=True)
+                if DATABASE_URL and HAS_PSYCOPG2:
+                    db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
+                else:
+                    db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
+                try: await bot.send_message(ref[0], f"🎉 Referral Bonus Credited! Earned <b>${REFERRAL_BONUS:.2f}</b>!", parse_mode="HTML")
+                except Exception: pass
+            else:
+                db("UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
+        try:
+            await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
+        except Exception: pass
+
 async def poll_traffic():
     while True:
         try:
             if http_session and not http_session.closed:
-                async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=15", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}) as r:
-                    if r.status == 200:
-                        for item in (await r.json()).get("rows", []):
-                            mid = item.get("id") or f"{item.get('destinationNumber')}_{item.get('otp')}"
-                            if mid in PROCESSED_OTPS: continue
-                            PROCESSED_OTPS.add(mid)
+                # --- PANEL 1: THIRDWAVE ---
+                if THIRDWAVE_API_KEY:
+                    try:
+                        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=15", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}) as r:
+                            if r.status == 200:
+                                for item in (await r.json()).get("rows", []):
+                                    mid = f"tw_{item.get('id') or item.get('destinationNumber')}_{item.get('otp')}"
+                                    if mid in PROCESSED_OTPS: continue
+                                    PROCESSED_OTPS.add(mid)
 
-                            phone = str(item.get("destinationNumber","")).strip()
-                            body = str(item.get("messageBody",""))
-                            otp_code = extract_otp(body, item.get("otp"))
-                            clean_num = re.sub(r"\D", "", phone)
+                                    await process_incoming_otp(
+                                        phone=item.get("destinationNumber", ""),
+                                        body=item.get("messageBody", ""),
+                                        raw_otp=item.get("otp", "")
+                                    )
+                    except Exception as tw_e: print(f"[THIRDWAVE ERROR] {tw_e}")
 
-                            row = db("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), fetch="one")
-                            srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
+                # --- PANEL 2: IPRN.PRO ---
+                if IPRN_API_KEY:
+                    try:
+                        headers = {
+                            "Authorization": f"Bearer {IPRN_API_KEY}",
+                            "Content-Type": "application/json",
+                            "Accept": "application/json"
+                        }
+                        async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=15", headers=headers) as r:
+                            if r.status == 200:
+                                res_data = await r.json()
+                                items = res_data.get("data", []) if isinstance(res_data, dict) else []
+                                for item in items:
+                                    # Unique ID based on b_number + created_at timestamp
+                                    mid = f"iprn_{item.get('b_number')}_{item.get('created_at')}"
+                                    if mid in PROCESSED_OTPS: continue
+                                    PROCESSED_OTPS.add(mid)
 
-                            grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
-                            
-                            try:
-                                await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=grp_kb, parse_mode="HTML")
-                            except Exception: pass
+                                    await process_incoming_otp(
+                                        phone=item.get("b_number", ""),
+                                        body=item.get("message", "")
+                                    )
+                    except Exception as iprn_e: print(f"[IPRN ERROR] {iprn_e}")
 
-                            if row:
-                                uid = row[0]
-                                if DATABASE_URL and HAS_PSYCOPG2:
-                                    db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (uid, rate, rate), commit=True)
-                                else:
-                                    db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (uid, rate, rate), commit=True)
-                                
-                                db("INSERT INTO otp_logs (user_id) VALUES (?)", (uid,), commit=True)
-                                
-                                ref = db("SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (uid,), fetch="one")
-                                if ref and ref[2] == 0:
-                                    if ref[1] + 1 >= 3:
-                                        db("UPDATE referrals SET otp_count = 3, rewarded = 1 WHERE user_id = ?", (uid,), commit=True)
-                                        if DATABASE_URL and HAS_PSYCOPG2:
-                                            db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
-                                        else:
-                                            db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
-                                        try: await bot.send_message(ref[0], f"🎉 Referral Bonus Credited! Earned <b>${REFERRAL_BONUS:.2f}</b>!", parse_mode="HTML")
-                                        except Exception: pass
-                                    else:
-                                        db("UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
-                                try:
-                                    await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(phone)}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
-                                except Exception: pass
         except Exception as e: print(f"[WORKER ERROR] {e}")
         await asyncio.sleep(5)
 
