@@ -18,7 +18,8 @@ except ImportError:
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
 IPRN_API_KEY = os.getenv("IPRN_API_KEY")  # Added IPRN.pro API Key
-DATABASE_URL = os.getenv("DATABASE_URL", "")     # postgresql://postgres:password@...
+DATABASE_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip()
+     # postgresql://postgres:password@...
 RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0) or 0)
