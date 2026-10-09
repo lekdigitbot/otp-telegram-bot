@@ -156,51 +156,69 @@ async def add_num(m: Message):
 
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
     
-    # Styled Notification with Inline "Get Number" Blue Accent Button
+    bot_info = await bot.get_me()
     
+    # Styled Notification with Slanted (Italic) text asking user to get number from Bot
+    stock_text = (
+        f"🎉 <b>New Stock Added!</b>\n\n"
+        f"🔹 <b>Service:</b> {srv}\n"
+        f"🌍 <b>Country:</b> {cntry}\n"
+        f"📱 <b>Quantity:</b> <code>{added}</code> numbers\n"
+        f"💵 <b>Rate:</b> <code>${rate:.4f}</code> per OTP\n\n"
+        f"👉 <i>Press 'Get Number' from the Bot to request numbers!</i>"
     )
-    stock_kb = InlineKeyboardMarkup(inline_keyboard=[[
+
+    # Inline Keyboard Buttons for Direct Action
+    group_stock_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}")
+    ]])
+
+    bot_stock_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}")
     ]])
 
-    # 1. Broadcast to OTP Telegram Group
-    try: 
-        await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=stock_kb, parse_mode="HTML")
-    except Exception as e:
-        print(f"[GROUP STOCK ANNOUNCE ERROR] {e}")
+    # 1. Broadcast Stock Alert to OTP Telegram Group
+    if TELEGRAM_GROUP_ID:
+        try: 
+            await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=group_stock_kb, parse_mode="HTML")
+        except Exception as e:
+            print(f"[GROUP STOCK ANNOUNCE ERROR] {e}")
 
-    # 2. Broadcast directly in Bot to all registered users
+    # 2. Broadcast Stock Alert to All Registered Bot Users
     all_users = db("SELECT user_id FROM balances", fetch="all") or []
     for user in all_users:
         uid = user[0]
         try:
-            await bot.send_message(uid, stock_text, reply_markup=stock_kb, parse_mode="HTML")
-            await asyncio.sleep(0.05) # Rate limit protection
-        except Exception: pass
+            await bot.send_message(uid, stock_text, reply_markup=bot_stock_kb, parse_mode="HTML")
+            await asyncio.sleep(0.04) # Prevent hitting Telegram API rate limits
+        except Exception: 
+            pass
 
 @dp.message(F.text.startswith("/broadcast"))
 async def handle_broadcast(m: Message):
-    """Admin Broadcast Command to all bot users."""
+    """Admin Command to broadcast announcement to all users."""
     if m.from_user.id != ADMIN_ID: return
     text_to_send = m.text.replace("/broadcast", "", 1).strip()
     if not text_to_send:
-        return await m.answer("⚠️ Usage: `/broadcast <Your message here>`", parse_mode="Markdown")
+        return await m.answer("⚠️ Usage: <code>/broadcast Your message here</code>", parse_mode="HTML")
 
     all_users = db("SELECT user_id FROM balances", fetch="all") or []
     sent_count = 0
 
     await m.answer(f"⏳ Broadcasting message to {len(all_users)} user(s)...")
 
+    announcement_text = f"📢 <b>ANNOUNCEMENT</b>\n\n{text_to_send}"
+
     for user in all_users:
         uid = user[0]
         try:
-            await bot.send_message(uid, f"📢 <b>ANNOUNCEMENT:</b>\n\n{text_to_send}", parse_mode="HTML")
+            await bot.send_message(uid, announcement_text, parse_mode="HTML")
             sent_count += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.04) # Prevent hitting rate limits
         except Exception:
             pass
 
-    await m.answer(f"✅ Broadcast complete! Delivered to {sent_count} user(s).")
+    await m.answer(f"✅ Broadcast complete! Successfully delivered to {sent_count} user(s).", parse_mode="HTML")
 
 @dp.message(F.text.startswith("/delnumber"))
 async def del_num(m: Message):
@@ -266,7 +284,7 @@ async def start_h(m: Message):
                 db("INSERT OR IGNORE INTO referrals (user_id, referred_by) VALUES (?, ?)", (m.from_user.id, int(m.text.split()[1])), commit=True)
         except Exception: pass
 
-    # Register user ID in database balance table to ensure broadcast delivery
+    # Ensure user record exists in balance table
     if DATABASE_URL and HAS_PSYCOPG2:
         db("INSERT INTO balances (user_id, balance) VALUES (?, 0.0) ON CONFLICT DO NOTHING", (m.from_user.id,), commit=True)
     else:
@@ -283,7 +301,7 @@ async def supp_h(m: Message):
 async def srv_h(m: Message):
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
     rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
-    if not rows: return await m.answer("⚠️ Out of stock kindly be patient for stock upate!", reply_markup=main_menu())
+    if not rows: return await m.answer("⚠️ Out of stock kindly be patient for stock update!", reply_markup=main_menu())
     await m.answer("📲 Select service:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🔹 {s} ({c})", callback_data=f"s_{s}")] for s, c in rows]), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("s_"))
@@ -370,6 +388,7 @@ async def ref_h(m: Message):
     row = db("SELECT COUNT(*), SUM(rewarded) FROM referrals WHERE referred_by = ?", (m.from_user.id,), fetch="one")
     tot, rwd = (row[0] if row and row[0] else 0), (row[1] if row and row[1] else 0)
     await m.answer(f"♾️ <b>REFERRALS</b>\n\n🔗 <code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n👥 <b>Invited:</b> <code>{tot}</code>\n💵 <b>Earned:</b> <code>${rwd * REFERRAL_BONUS:.2f}</code>", parse_mode="HTML")
+
 @dp.message(F.text == "💸 WITHDRAW")
 async def wd_start(m: Message, state: FSMContext):
     row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one"); bal = row[0] if row else 0.0
@@ -411,10 +430,10 @@ async def status_h(m: Message):
 # --- DUAL PANEL WORKER (THIRDWAVE + IPRN.PRO) ---
 async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     """Helper to process matched OTPs from any provider."""
-    # 1. Check if this exact OTP log is already recorded in database
+    # 1. Check if this exact OTP log is already recorded
     exists = db("SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), fetch="one")
     if exists:
-        return  # Already processed! Skip completely.
+        return
 
     otp_code = extract_otp(body, raw_otp)
     clean_num = re.sub(r"\D", "", str(phone))
@@ -422,7 +441,7 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     if not clean_num:
         return
 
-    # 2. Record in database BEFORE delivering/crediting to block concurrent duplicates
+    # 2. Record in database BEFORE delivering/crediting to block duplicates
     row = db("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), fetch="one")
     uid = row[0] if row else None
 
@@ -489,7 +508,6 @@ async def poll_traffic():
                                     if not phone or not body:
                                         continue
 
-                                    # Unique Hash based on phone + full message body
                                     unique_str = f"tw_{phone}_{body.strip()}"
                                     mid = hashlib.md5(unique_str.encode()).hexdigest()
 
@@ -521,7 +539,6 @@ async def poll_traffic():
                                     if not phone or not body:
                                         continue
 
-                                    # Unique Hash based on phone + full message body
                                     unique_str = f"iprn_{phone}_{body.strip()}"
                                     mid = hashlib.md5(unique_str.encode()).hexdigest()
 
