@@ -359,12 +359,15 @@ async def status_h(m: Message):
     medals = ["🥇", "🥈", "🥉"]
     await m.answer(f"📊 <b>STATUS & LEADERBOARD</b>\n\n📱 <b>Total (7d):</b> <code>{u_cnt}</code>\n\n🗓️ <b>Daily:</b>\n" + "".join([f"📅 {d}: <code>{c}</code>\n" for d, c in daily]) + "\n🏆 <b>Top Rank:</b>\n" + "".join([f"{medals[i]}: User <code>{u}</code> — <b>{c} OTPs</b>\n" for i, (u, c) in enumerate(top_3)]), parse_mode="HTML")
 
+import hashlib
+
 # --- DUAL PANEL WORKER (THIRDWAVE + IPRN.PRO) ---
 async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     """Helper to process matched OTPs from any provider."""
+    # 1. Check if this exact OTP log is already recorded in database
     exists = db("SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), fetch="one")
     if exists:
-        return  # Skip already processed OTPs
+        return  # Already processed! Skip completely.
 
     otp_code = extract_otp(body, raw_otp)
     clean_num = re.sub(r"\D", "", str(phone))
@@ -372,7 +375,15 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     if not clean_num:
         return
 
+    # 2. Record in database BEFORE delivering/crediting to block concurrent duplicates
     row = db("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), fetch="one")
+    uid = row[0] if row else None
+
+    if DATABASE_URL and HAS_PSYCOPG2:
+        db("INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING", (otp_identifier, uid), commit=True)
+    else:
+        db("INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
+
     srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
 
     grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
@@ -381,14 +392,6 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
         await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=grp_kb, parse_mode="HTML")
     except Exception as e:
         print(f"[GROUP MSG ERROR] {e}")
-
-    uid = row[0] if row else None
-
-    # Save OTP identifier into persistent log
-    if DATABASE_URL and HAS_PSYCOPG2:
-        db("INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING", (otp_identifier, uid), commit=True)
-    else:
-        db("INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
 
     if row and uid:
         if DATABASE_URL and HAS_PSYCOPG2:
@@ -435,12 +438,13 @@ async def poll_traffic():
                                     phone = str(item.get("destinationNumber") or item.get("phone") or item.get("number") or "")
                                     body = str(item.get("messageBody") or item.get("message") or item.get("text") or "")
                                     raw_otp = str(item.get("otp") or item.get("code") or "")
-                                    item_id = str(item.get("id") or item.get("_id") or phone)
 
                                     if not phone or not body:
                                         continue
 
-                                    mid = f"tw_{item_id}_{raw_otp or body[:15]}"
+                                    # Unique Hash based on phone + full message body
+                                    unique_str = f"tw_{phone}_{body.strip()}"
+                                    mid = hashlib.md5(unique_str.encode()).hexdigest()
 
                                     await process_incoming_otp(
                                         otp_identifier=mid,
@@ -448,8 +452,6 @@ async def poll_traffic():
                                         body=body,
                                         raw_otp=raw_otp
                                     )
-                            else:
-                                print(f"[THIRDWAVE HTTP {r.status}] {await r.text()}")
                     except Exception as tw_e: 
                         print(f"[THIRDWAVE ERROR] {tw_e}")
 
@@ -468,27 +470,26 @@ async def poll_traffic():
                                 for item in items:
                                     phone = str(item.get("b_number") or item.get("phone") or "")
                                     body = str(item.get("message") or item.get("text") or "")
-                                    created_at = str(item.get("created_at") or item.get("id") or body[:15])
 
                                     if not phone or not body:
                                         continue
 
-                                    mid = f"iprn_{phone}_{created_at}"
+                                    # Unique Hash based on phone + full message body
+                                    unique_str = f"iprn_{phone}_{body.strip()}"
+                                    mid = hashlib.md5(unique_str.encode()).hexdigest()
 
                                     await process_incoming_otp(
                                         otp_identifier=mid,
                                         phone=phone,
                                         body=body
                                     )
-                            else:
-                                print(f"[IPRN HTTP {r.status}] {await r.text()}")
                     except Exception as iprn_e: 
                         print(f"[IPRN ERROR] {iprn_e}")
 
         except Exception as e: 
             print(f"[WORKER ERROR] {e}")
             
-        await asyncio.sleep(5)
+        await asyncio.sleep(5) 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
