@@ -89,7 +89,7 @@ else:
 for q in init_queries:
     db(q, commit=True)
 
-# Auto-migrate existing database tables if missing otp_identifier column
+# Migration
 try:
     if DATABASE_URL and HAS_PSYCOPG2:
         db("ALTER TABLE otp_logs ADD COLUMN IF NOT EXISTS otp_identifier TEXT UNIQUE;", commit=True)
@@ -132,6 +132,41 @@ async def check_user_joined(uid):
             except Exception: return False
     return True
 
+# --- DYNAMIC IN-PLACE SELECTION FLOW HELPERS ---
+
+def build_services_keyboard():
+    """Builds grid of available services from active stock."""
+    rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
+    if not rows:
+        return None, "⚠️ <b>Out of stock!</b> Kindly be patient for stock updates."
+    
+    keyboard = []
+    # Build 2-column grid layout for services
+    current_row = []
+    for srv, cnt in rows:
+        current_row.append(InlineKeyboardButton(text=f"🔹 {srv.upper()}", callback_data=f"s_{srv}"))
+        if len(current_row) == 2:
+            keyboard.append(current_row)
+            current_row = []
+    if current_row:
+        keyboard.append(current_row)
+
+    keyboard.append([InlineKeyboardButton(text="🔙 Back to Menu", callback_data="cb_close_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard), "📌 <b>Select a Service:</b>\nChoose the platform you need a number for:"
+
+def build_countries_keyboard(srv):
+    """Builds country options for a chosen service."""
+    rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= 2", (srv,), fetch="all") or []
+    if not rows:
+        return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
+
+    keyboard = []
+    for cntry, rate, avail in rows:
+        keyboard.append([InlineKeyboardButton(text=f"🇳🇬 {cntry} | ${rate:.3f}/OTP", callback_data=f"c_{srv}_{cntry}")])
+
+    keyboard.append([InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard), f"📌 <b>Select country for {srv.upper()}:</b>"
+
 # Admin Handlers
 @dp.message(F.text.startswith("/addnumber"))
 async def add_num(m: Message):
@@ -157,8 +192,6 @@ async def add_num(m: Message):
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
     
     bot_info = await bot.get_me()
-    
-    # Styled Notification with Slanted (Italic) text asking user to get number from Bot
     stock_text = (
         f"🎉 <b>New Stock Added!</b>\n\n"
         f"🔹 <b>Service:</b> {srv}\n"
@@ -168,7 +201,6 @@ async def add_num(m: Message):
         f"👉 <i>Press 'Get Number' from the Bot to request numbers!</i>"
     )
 
-    # Inline Keyboard Buttons for Direct Action
     group_stock_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}")
     ]])
@@ -177,26 +209,23 @@ async def add_num(m: Message):
         InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}")
     ]])
 
-    # 1. Broadcast Stock Alert to OTP Telegram Group
     if TELEGRAM_GROUP_ID:
         try: 
             await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=group_stock_kb, parse_mode="HTML")
         except Exception as e:
             print(f"[GROUP STOCK ANNOUNCE ERROR] {e}")
 
-    # 2. Broadcast Stock Alert to All Registered Bot Users
     all_users = db("SELECT user_id FROM balances", fetch="all") or []
     for user in all_users:
         uid = user[0]
         try:
             await bot.send_message(uid, stock_text, reply_markup=bot_stock_kb, parse_mode="HTML")
-            await asyncio.sleep(0.04) # Prevent hitting Telegram API rate limits
+            await asyncio.sleep(0.04)
         except Exception: 
             pass
 
 @dp.message(F.text.startswith("/broadcast"))
 async def handle_broadcast(m: Message):
-    """Admin Command to broadcast announcement to all users."""
     if m.from_user.id != ADMIN_ID: return
     text_to_send = m.text.replace("/broadcast", "", 1).strip()
     if not text_to_send:
@@ -206,7 +235,6 @@ async def handle_broadcast(m: Message):
     sent_count = 0
 
     await m.answer(f"⏳ Broadcasting message to {len(all_users)} user(s)...")
-
     announcement_text = f"📢 <b>ANNOUNCEMENT</b>\n\n{text_to_send}"
 
     for user in all_users:
@@ -214,7 +242,7 @@ async def handle_broadcast(m: Message):
         try:
             await bot.send_message(uid, announcement_text, parse_mode="HTML")
             sent_count += 1
-            await asyncio.sleep(0.04) # Prevent hitting rate limits
+            await asyncio.sleep(0.04)
         except Exception:
             pass
 
@@ -234,7 +262,8 @@ async def clear_srv(m: Message):
         r = (db("DELETE FROM stock WHERE service = ?", (s,), fetch="rowcount", commit=True) or 0) + (db("DELETE FROM assignments WHERE service = ?", (s,), fetch="rowcount", commit=True) or 0)
         await m.answer(f"✅ Cleared {s} ({r} entries)", parse_mode="HTML")
 
-# Callbacks
+# --- IN-PLACE INLINE CALLBACK HANDLERS ---
+
 @dp.callback_query(F.data == "check_membership")
 async def cb_check(c: CallbackQuery):
     if await check_user_joined(c.from_user.id):
@@ -243,6 +272,66 @@ async def cb_check(c: CallbackQuery):
         except Exception: pass
         await c.message.answer(f"👋 Welcome <b>{c.from_user.first_name}</b>!", reply_markup=main_menu(), parse_mode="HTML")
     else: await c.answer("❌ Join required groups first!", show_alert=True)
+
+@dp.callback_query(F.data == "cb_close_menu")
+async def cb_close(c: CallbackQuery):
+    try: await c.message.delete()
+    except Exception: pass
+
+@dp.callback_query(F.data == "cb_services_list")
+async def cb_back_services(c: CallbackQuery):
+    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
+    kb, txt = build_services_keyboard()
+    if not kb:
+        return await c.answer("⚠️ Out of stock!", show_alert=True)
+    await c.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("s_"))
+async def srv_sel(c: CallbackQuery):
+    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
+    srv = c.data[2:]
+    kb, txt = build_countries_keyboard(srv)
+    if not kb:
+        return await c.answer(f"⚠️ Out of stock for {srv}!", show_alert=True)
+    
+    # Edit current message directly instead of creating a new one
+    await c.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("c_"))
+async def num_assign(c: CallbackQuery):
+    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
+    _, srv, cntry = c.data.split("_", 2)
+    rows = db("SELECT phone_number, rate FROM stock WHERE service = ? AND country = ? LIMIT 2", (srv, cntry), fetch="all") or []
+    if len(rows) < 2: 
+        return await c.answer("⚠️ Out of stock for selected country!", show_alert=True)
+    
+    nums, rate = [rows[0][0], rows[1][0]], rows[0][1]
+    for n in nums:
+        db("DELETE FROM stock WHERE phone_number = ?", (n,), commit=True)
+        if DATABASE_URL and HAS_PSYCOPG2:
+            db("INSERT INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?) ON CONFLICT (phone_number) DO UPDATE SET user_id=EXCLUDED.user_id, service=EXCLUDED.service, country=EXCLUDED.country, rate=EXCLUDED.rate", (n, c.from_user.id, srv, cntry, rate), commit=True)
+        else:
+            db("INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)", (n, c.from_user.id, srv, cntry, rate), commit=True)
+
+    assign_text = (
+        f"🇳🇬 <b>{cntry} Number Assigned:</b>\n\n"
+        f"⏳ Waiting for OTP...\n"
+        f"Per OTP Rate: <b>${rate:.3f}</b>\n"
+    )
+
+    assign_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"➕ +{nums[0]}", copy_text={"text": f"+{nums[0]}"})],
+        [InlineKeyboardButton(text=f"➕ +{nums[1]}", copy_text={"text": f"+{nums[1]}"})],
+        [
+            InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}"),
+            InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}")
+        ],
+        [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK)],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list")]
+    ])
+
+    # Edit in-place to display assigned numbers without opening new chat blocks
+    await c.message.edit_text(assign_text, reply_markup=assign_kb, parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith(("wd_accept_", "wd_reject_")))
 async def cb_wd(c: CallbackQuery):
@@ -284,7 +373,6 @@ async def start_h(m: Message):
                 db("INSERT OR IGNORE INTO referrals (user_id, referred_by) VALUES (?, ?)", (m.from_user.id, int(m.text.split()[1])), commit=True)
         except Exception: pass
 
-    # Ensure user record exists in balance table
     if DATABASE_URL and HAS_PSYCOPG2:
         db("INSERT INTO balances (user_id, balance) VALUES (?, 0.0) ON CONFLICT DO NOTHING", (m.from_user.id,), commit=True)
     else:
@@ -297,34 +385,17 @@ async def start_h(m: Message):
 async def supp_h(m: Message): 
     await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK)]]))
 
+@dp.message(F.text == "💀 SUPPORT")
+async def supp_h(m: Message): 
+    await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK)]]))
+
 @dp.message(F.text == "📱 GET NUMBER")
 async def srv_h(m: Message):
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
-    rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
-    if not rows: return await m.answer("⚠️ Out of stock kindly be patient for stock update!", reply_markup=main_menu())
-    await m.answer("📲 Select service:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🔹 {s} ({c})", callback_data=f"s_{s}")] for s, c in rows]), parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("s_"))
-async def srv_sel(c: CallbackQuery):
-    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
-    srv = c.data[2:]; rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= 2", (srv,), fetch="all") or []
-    if not rows: return await c.message.answer(f"⚠️ Out of stock for {html.escape(srv)}.")
-    await c.message.answer(f"🌍 Select Country for {html.escape(srv)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🌍 {cnt} (${r:.4f}) - {cnt_cnt} avail", callback_data=f"c_{srv}_{cnt}")] for cnt, r, cnt_cnt in rows]), parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("c_"))
-async def num_assign(c: CallbackQuery):
-    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
-    _, srv, cntry = c.data.split("_", 2)
-    rows = db("SELECT phone_number, rate FROM stock WHERE service = ? AND country = ? LIMIT 2", (srv, cntry), fetch="all") or []
-    if len(rows) < 2: return await c.message.answer("⚠️ Out of stock!")
-    nums, rate = [rows[0][0], rows[1][0]], rows[0][1]
-    for n in nums:
-        db("DELETE FROM stock WHERE phone_number = ?", (n,), commit=True)
-        if DATABASE_URL and HAS_PSYCOPG2:
-            db("INSERT INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?) ON CONFLICT (phone_number) DO UPDATE SET user_id=EXCLUDED.user_id, service=EXCLUDED.service, country=EXCLUDED.country, rate=EXCLUDED.rate", (n, c.from_user.id, srv, cntry, rate), commit=True)
-        else:
-            db("INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)", (n, c.from_user.id, srv, cntry, rate), commit=True)
-    await c.message.answer(f"🌐 <b>2 Numbers Assigned Successfully!</b>\n🔹 <b>Service:</b> {html.escape(srv)}\n🌍 <b>Country:</b> {html.escape(cntry)}\n📱 <b>1:</b> <code>{nums[0]}</code>\n📱 <b>2:</b> <code>{nums[1]}</code>\n💰 <b>Rate:</b> <code>${rate:.4f}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Otp group", url=OTP_GROUP_LINK)]]), parse_mode="HTML")
+    kb, txt = build_services_keyboard()
+    if not kb:
+        return await m.answer(txt, reply_markup=main_menu(), parse_mode="HTML")
+    await m.answer(txt, reply_markup=kb, parse_mode="HTML")
 
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def traffic_h(m: Message):
@@ -356,8 +427,12 @@ async def traffic_h(m: Message):
     # 2. Fetch IPRN.pro Traffic
     if IPRN_API_KEY:
         try:
-            headers = {"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
-            async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=5", headers=headers) as r:
+            iprn_headers = {
+                "Authorization": f"Bearer {IPRN_API_KEY}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=5", headers=iprn_headers) as r:
                 if r.status == 200:
                     res_data = await r.json()
                     iprn_items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else [])
@@ -392,16 +467,15 @@ async def ref_h(m: Message):
     ref_text = (
         f"♾️ <b>REFER AND EARN</b>\n\n"
         f"Earn <b>${REFERRAL_BONUS:.2f}</b> for every friend you invite!\n\n"
-        f"📌 <b>Rule:</b> Your referred friend must complete at least <b>3 OTP transactions</b> for your bonus to be credited to your main balance.\n\n"
+        f"📌 <b>Rule:</b> Your referred friend must complete at least <b>3 OTP transactions</b> for your bonus to be credited directly to your main balance.\n\n"
         f"🔗 <b>Your Referral Link:</b>\n"
         f"<code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n\n"
         f"👥 <b>Total Invited:</b> <code>{tot}</code>\n"
         f"💵 <b>Rewarded Referrals:</b> <code>{rwd}</code>\n"
         f"💰 <b>Total Earned:</b> <code>${rwd * REFERRAL_BONUS:.2f}</code>"
     )
-    
     await m.answer(ref_text, parse_mode="HTML")
-    
+
 @dp.message(F.text == "💸 WITHDRAW")
 async def wd_start(m: Message, state: FSMContext):
     row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one"); bal = row[0] if row else 0.0
@@ -440,11 +514,11 @@ async def status_h(m: Message):
     medals = ["🥇", "🥈", "🥉"]
     await m.answer(f"📊 <b>STATUS & LEADERBOARD</b>\n\n📱 <b>Total (7d):</b> <code>{u_cnt}</code>\n\n🗓️ <b>Daily:</b>\n" + "".join([f"📅 {d}: <code>{c}</code>\n" for d, c in daily]) + "\n🏆 <b>Top Rank:</b>\n" + "".join([f"{medals[i]}: User <code>{u}</code> — <b>{c} OTPs</b>\n" for i, (u, c) in enumerate(top_3)]), parse_mode="HTML")
 
-# --- DUAL PANEL WORKER (THIRDWAVE + IPRN.PRO) ---
+# --- HIGH-SPEED ASYNC WORKER (THIRDWAVE + IPRN.PRO) ---
+
 async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
-    """Helper to process matched OTPs from any provider."""
-    # 1. Check if this exact OTP log is already recorded
-    exists = db("SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), fetch="one")
+    """Processes matched OTPs without stalling the main event loop."""
+    exists = await asyncio.to_thread(db, "SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), "one")
     if exists:
         return
 
@@ -454,42 +528,47 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     if not clean_num:
         return
 
-    # 2. Record in database BEFORE delivering/crediting to block duplicates
-    row = db("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), fetch="one")
+    row = await asyncio.to_thread(db, "SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), "one")
     uid = row[0] if row else None
 
     if DATABASE_URL and HAS_PSYCOPG2:
-        db("INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING", (otp_identifier, uid), commit=True)
+        await asyncio.to_thread(db, "INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING", (otp_identifier, uid), commit=True)
     else:
-        db("INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
+        await asyncio.to_thread(db, "INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
 
     srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
 
     grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
     
     try:
-        await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=grp_kb, parse_mode="HTML")
+        await bot.send_message(
+            TELEGRAM_GROUP_ID, 
+            f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", 
+            reply_markup=grp_kb, 
+            parse_mode="HTML"
+        )
     except Exception as e:
         print(f"[GROUP MSG ERROR] {e}")
 
     if row and uid:
         if DATABASE_URL and HAS_PSYCOPG2:
-            db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (uid, rate, rate), commit=True)
+            await asyncio.to_thread(db, "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (uid, rate, rate), commit=True)
         else:
-            db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (uid, rate, rate), commit=True)
+            await asyncio.to_thread(db, "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (uid, rate, rate), commit=True)
         
-        ref = db("SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (uid,), fetch="one")
+        ref = await asyncio.to_thread(db, "SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (uid,), "one")
         if ref and ref[2] == 0:
             if ref[1] + 1 >= 3:
-                db("UPDATE referrals SET otp_count = 3, rewarded = 1 WHERE user_id = ?", (uid,), commit=True)
+                await asyncio.to_thread(db, "UPDATE referrals SET otp_count = 3, rewarded = 1 WHERE user_id = ?", (uid,), commit=True)
                 if DATABASE_URL and HAS_PSYCOPG2:
-                    db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
+                    await asyncio.to_thread(db, "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
                 else:
-                    db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
+                    await asyncio.to_thread(db, "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
                 try: await bot.send_message(ref[0], f"🎉 Referral Bonus Credited! Earned <b>${REFERRAL_BONUS:.2f}</b>!", parse_mode="HTML")
                 except Exception: pass
             else:
-                db("UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
+                await asyncio.to_thread(db, "UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
+
         try:
             await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
         except Exception as e:
@@ -500,7 +579,7 @@ async def poll_traffic():
         try:
             if http_session and not http_session.closed:
                 
-                # --- PANEL 1: THIRDWAVE ---
+                # PANEL 1: THIRDWAVE
                 if THIRDWAVE_API_KEY:
                     try:
                         tw_headers = {
@@ -508,7 +587,7 @@ async def poll_traffic():
                             "x-api-key": THIRDWAVE_API_KEY,
                             "Accept": "application/json"
                         }
-                        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=20&pageSize=20", headers=tw_headers) as r:
+                        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=50&pageSize=50", headers=tw_headers) as r:
                             if r.status == 200:
                                 res_json = await r.json()
                                 rows = res_json.get("rows", []) if isinstance(res_json, dict) else (res_json if isinstance(res_json, list) else [])
@@ -533,7 +612,7 @@ async def poll_traffic():
                     except Exception as tw_e: 
                         print(f"[THIRDWAVE ERROR] {tw_e}")
 
-                # --- PANEL 2: IPRN.PRO ---
+                # PANEL 2: IPRN.PRO
                 if IPRN_API_KEY:
                     try:
                         iprn_headers = {
@@ -541,7 +620,7 @@ async def poll_traffic():
                             "Content-Type": "application/json",
                             "Accept": "application/json"
                         }
-                        async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=20", headers=iprn_headers) as r:
+                        async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=50", headers=iprn_headers) as r:
                             if r.status == 200:
                                 res_data = await r.json()
                                 items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else [])
@@ -566,7 +645,7 @@ async def poll_traffic():
         except Exception as e: 
             print(f"[WORKER ERROR] {e}")
             
-        await asyncio.sleep(5)
+        await asyncio.sleep(1.0)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
