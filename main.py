@@ -156,39 +156,26 @@ async def add_num(m: Message):
 
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
     
-    bot_info = await bot.get_me()
+    # Styled Notification with Inline "Get Number" Blue Accent Button
     
-    stock_text = (
-        f"🎉 <b>New Numbers Added!</b>\n\n"
-        f"🔹 <b>Service:</b> {srv}\n"
-        f"🌍 <b>Country:</b> {cntry}\n"
-        f"📱 <b>Numbers:</b> <code>{added}</code> numbers added\n"
-        f"💵 <b>Rate:</b> <code>${rate:.4f}</code> per OTP"
     )
-
-    # Group Deep Link URL Button
-    group_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"📲 Get Number — {srv}", url=f"https://t.me/{bot_info.lekdigitalnumberzone}?start=srv_{srv}")
-    ]])
-
-    # Bot Direct Callback Button
-    bot_kb = InlineKeyboardMarkup(inline_keyboard=[[
+    stock_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}")
     ]])
 
-    # 1. Post Notification to Telegram Group with Deep Link
+    # 1. Broadcast to OTP Telegram Group
     try: 
-        await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=group_kb, parse_mode="HTML")
+        await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=stock_kb, parse_mode="HTML")
     except Exception as e:
         print(f"[GROUP STOCK ANNOUNCE ERROR] {e}")
 
-    # 2. Post Notification directly to all bot users
+    # 2. Broadcast directly in Bot to all registered users
     all_users = db("SELECT user_id FROM balances", fetch="all") or []
     for user in all_users:
         uid = user[0]
         try:
-            await bot.send_message(uid, stock_text, reply_markup=bot_kb, parse_mode="HTML")
-            await asyncio.sleep(0.05)
+            await bot.send_message(uid, stock_text, reply_markup=stock_kb, parse_mode="HTML")
+            await asyncio.sleep(0.05) # Rate limit protection
         except Exception: pass
 
 @dp.message(F.text.startswith("/broadcast"))
@@ -271,40 +258,21 @@ async def cb_wd(c: CallbackQuery):
 # User Handlers
 @dp.message(F.text.startswith("/start"))
 async def start_h(m: Message):
-    args = m.text.split()
-
-    if len(args) > 1 and args[1].isdigit() and m.from_user.id != int(args[1]):
+    if len(m.text.split()) > 1 and m.text.split()[1].isdigit() and m.from_user.id != int(m.text.split()[1]):
         try:
             if DATABASE_URL and HAS_PSYCOPG2:
-                db("INSERT INTO referrals (user_id, referred_by) VALUES (?, ?) ON CONFLICT DO NOTHING", (m.from_user.id, int(args[1])), commit=True)
+                db("INSERT INTO referrals (user_id, referred_by) VALUES (?, ?) ON CONFLICT DO NOTHING", (m.from_user.id, int(m.text.split()[1])), commit=True)
             else:
-                db("INSERT OR IGNORE INTO referrals (user_id, referred_by) VALUES (?, ?)", (m.from_user.id, int(args[1])), commit=True)
+                db("INSERT OR IGNORE INTO referrals (user_id, referred_by) VALUES (?, ?)", (m.from_user.id, int(m.text.split()[1])), commit=True)
         except Exception: pass
 
-    # Ensure user record exists for broadcasts
+    # Register user ID in database balance table to ensure broadcast delivery
     if DATABASE_URL and HAS_PSYCOPG2:
         db("INSERT INTO balances (user_id, balance) VALUES (?, 0.0) ON CONFLICT DO NOTHING", (m.from_user.id,), commit=True)
     else:
         db("INSERT OR IGNORE INTO balances (user_id, balance) VALUES (?, 0.0)", (m.from_user.id,), commit=True)
 
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Access Restricted! Join all groups:", reply_markup=force_join_kb(), parse_mode="HTML")
-
-    # Handle Deep Link Redirects from Group Button
-    if len(args) > 1 and args[1].startswith("srv_"):
-        srv = args[1].replace("srv_", "", 1).capitalize()
-        rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= 2", (srv,), fetch="all") or []
-        if not rows:
-            return await m.answer(f"⚠️ Out of stock for {html.escape(srv)}.", reply_markup=main_menu())
-        
-        await m.answer(
-            f"🌍 Select Country for {html.escape(srv)}:", 
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text=f"🌍 {cnt} (${r:.4f}) - {cnt_cnt} avail", callback_data=f"c_{srv}_{cnt}")
-            ] for cnt, r, cnt_cnt in rows]), 
-            parse_mode="HTML"
-        )
-        return
-
     await m.answer(f"👋 Welcome <b>{m.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!", reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(F.text == "💀 SUPPORT")
@@ -347,7 +315,7 @@ async def traffic_h(m: Message):
     
     combined_rows = []
 
-     # 1. Fetch Thirdwave Traffic
+    # 1. Fetch Thirdwave Traffic
     if THIRDWAVE_API_KEY:
         try:
             tw_headers = {
@@ -402,7 +370,6 @@ async def ref_h(m: Message):
     row = db("SELECT COUNT(*), SUM(rewarded) FROM referrals WHERE referred_by = ?", (m.from_user.id,), fetch="one")
     tot, rwd = (row[0] if row and row[0] else 0), (row[1] if row and row[1] else 0)
     await m.answer(f"♾️ <b>REFERRALS</b>\n\n🔗 <code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n👥 <b>Invited:</b> <code>{tot}</code>\n💵 <b>Earned:</b> <code>${rwd * REFERRAL_BONUS:.2f}</code>", parse_mode="HTML")
-
 @dp.message(F.text == "💸 WITHDRAW")
 async def wd_start(m: Message, state: FSMContext):
     row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one"); bal = row[0] if row else 0.0
@@ -444,6 +411,7 @@ async def status_h(m: Message):
 # --- DUAL PANEL WORKER (THIRDWAVE + IPRN.PRO) ---
 async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     """Helper to process matched OTPs from any provider."""
+    # 1. Check if this exact OTP log is already recorded in database
     exists = db("SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), fetch="one")
     if exists:
         return  # Already processed! Skip completely.
@@ -454,10 +422,10 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     if not clean_num:
         return
 
+    # 2. Record in database BEFORE delivering/crediting to block concurrent duplicates
     row = db("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), fetch="one")
     uid = row[0] if row else None
 
-    # Save OTP identifier in database log
     if DATABASE_URL and HAS_PSYCOPG2:
         db("INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING", (otp_identifier, uid), commit=True)
     else:
