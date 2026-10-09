@@ -33,7 +33,7 @@ SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 IPRN_BASE_URL = "https://api.iprn.pro/api/stock/public"
-DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS = 0.003, 0.25, 0.01
+DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS = 0.003, 0.35, 0.01
 
 if not BOT_TOKEN:
     raise ValueError("❌ Missing BOT_TOKEN!")
