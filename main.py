@@ -48,7 +48,6 @@ class WithdrawalState(StatesGroup):
 def db(q, p=(), fetch=None, commit=False):
     """Executes query on PostgreSQL if DATABASE_URL is set, else SQLite."""
     use_pg = bool(DATABASE_URL and HAS_PSYCOPG2)
-    
     formatted_q = q.replace("?", "%s") if use_pg else q
 
     if use_pg:
@@ -91,10 +90,61 @@ for q in init_queries:
     db(q, commit=True)
 
 # Helpers & Keyboards
-def mask_phone(p): clean = re.sub(r"\D", "", str(p).strip()); return clean[:2]+"****"+clean[-2:] if len(clean)<=7 else clean[:5]+"****"+clean[-4:]
-def extract_otp(b, f=""): match = re.search(r'\b\d{4,8}\b', str(b)); return str(f).strip() if (f and str(f) != "None") else (match.group(0) if match else "No Code")
-def main_menu(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")], [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")], [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")], [KeyboardButton(text="📊 STATUS")]], resize_keyboard=True)
-def force_join_kb(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK)], [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK)], [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK)], [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership")]])
+def clean_digits(p):
+    return re.sub(r"\D", "", str(p or "").strip())
+
+def normalize_phone(p):
+    """Normalizes phone formats (e.g. 23407... vs 2347...)."""
+    digits = clean_digits(p)
+    if digits.startswith("2340") and len(digits) >= 13:
+        return "234" + digits[4:]
+    return digits
+
+def mask_phone(p): 
+    clean = clean_digits(p)
+    if not clean: return "****"
+    return clean[:2]+"****"+clean[-2:] if len(clean)<=7 else clean[:5]+"****"+clean[-4:]
+
+def extract_otp(b, f=""): 
+    match = re.search(r'\b\d{4,8}\b', str(b))
+    return str(f).strip() if (f and str(f) != "None") else (match.group(0) if match else "No Code")
+
+def find_assignment(phone):
+    """Finds assigned user by exact match or trailing digit suffix."""
+    c_num = clean_digits(phone)
+    n_num = normalize_phone(phone)
+    
+    # 1. Direct match
+    row = db("SELECT user_id, service, country, rate, phone_number FROM assignments WHERE phone_number = ?", (c_num,), fetch="one")
+    if row: return row
+
+    if n_num != c_num:
+        row = db("SELECT user_id, service, country, rate, phone_number FROM assignments WHERE phone_number = ?", (n_num,), fetch="one")
+        if row: return row
+
+    # 2. Suffix Match (Last 9 digits)
+    if len(c_num) >= 9:
+        suffix = f"%{c_num[-9:]}"
+        row = db("SELECT user_id, service, country, rate, phone_number FROM assignments WHERE phone_number LIKE ?", (suffix,), fetch="one")
+        if row: return row
+
+    return None
+
+def main_menu(): 
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")], 
+        [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")], 
+        [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")], 
+        [KeyboardButton(text="📊 STATUS")]
+    ], resize_keyboard=True)
+
+def force_join_kb(): 
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK)], 
+        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK)], 
+        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK)], 
+        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership")]
+    ])
 
 async def check_user_joined(uid):
     if uid == ADMIN_ID: return True
@@ -110,11 +160,12 @@ async def check_user_joined(uid):
 async def add_num(m: Message):
     if m.from_user.id != ADMIN_ID: return
     lines = [l.strip() for l in m.text.strip().split("\n") if l.strip()]
-    if len(lines) < 1 or len(lines[0].split(maxsplit=3)) < 3: return await m.answer("⚠ Usage: <code>/addnumber Srv Cntry Rate\nNum1,Num2</code>", parse_mode="HTML")
+    if len(lines) < 1 or len(lines[0].split(maxsplit=3)) < 3: 
+        return await m.answer("⚠ Usage: <code>/addnumber Srv Cntry Rate\nNum1,Num2</code>", parse_mode="HTML")
     p = lines[0].split(maxsplit=3); srv, cntry = p[1].capitalize(), p[2].capitalize()
     rate = float(re.sub(r"[^\d.]", "", p[3])) if len(p) >= 4 and re.sub(r"[^\d.]", "", p[3]) else DEFAULT_OTP_RATE
     raw = [n for l in lines[1:] for n in l.split(",")]
-    nums = [re.sub(r"\D", "", n) for n in raw if re.sub(r"\D", "", n)]
+    nums = [clean_digits(n) for n in raw if clean_digits(n)]
     
     added = 0
     for n in nums:
@@ -127,13 +178,14 @@ async def add_num(m: Message):
         except Exception: pass
 
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
-    try: await bot.send_message(TELEGRAM_GROUP_ID, f"📢 <b>NEW STOCK UPDATE! 📢</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n💵 <b>Rate:</b> <code>${rate:.4f}</code> / OTP\n📱 <b>Added:</b> <code>{added}</code>", parse_mode="HTML")
+    try: 
+        await bot.send_message(TELEGRAM_GROUP_ID, f"📢 <b>NEW STOCK UPDATE! 📢</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n💵 <b>Rate:</b> <code>${rate:.4f}</code> / OTP\n📱 <b>Added:</b> <code>{added}</code>", parse_mode="HTML")
     except Exception: pass
 
 @dp.message(F.text.startswith("/delnumber"))
 async def del_num(m: Message):
     if m.from_user.id == ADMIN_ID and len(m.text.split()) > 1:
-        p = re.sub(r"\D", "", m.text.split()[1])
+        p = clean_digits(m.text.split()[1])
         r = (db("DELETE FROM stock WHERE phone_number = ?", (p,), fetch="rowcount", commit=True) or 0) + (db("DELETE FROM assignments WHERE phone_number = ?", (p,), fetch="rowcount", commit=True) or 0)
         await m.answer(f"✅ Removed {p}" if r else "❌ Not found", parse_mode="HTML")
 
@@ -197,13 +249,14 @@ async def start_h(m: Message):
     await m.answer(f"👋 Welcome <b>{m.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!", reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(F.text == "💀 SUPPORT")
-async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK)]]))
+async def supp_h(m: Message): 
+    await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK)]]))
 
 @dp.message(F.text == "📱 GET NUMBER")
 async def srv_h(m: Message):
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
     rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
-    if not rows: return await m.answer("⚠️ Out of stock kindly be patient for stock upate!", reply_markup=main_menu())
+    if not rows: return await m.answer("⚠️ Out of stock kindly be patient for stock update!", reply_markup=main_menu())
     await m.answer("📲 Select service:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🔹 {s} ({c})", callback_data=f"s_{s}")] for s, c in rows]), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("s_"))
@@ -238,14 +291,21 @@ async def traffic_h(m: Message):
     # 1. Fetch Thirdwave Traffic
     if THIRDWAVE_API_KEY:
         try:
-            async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=5", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}) as r:
+            tw_headers = {
+                "Authorization": f"Bearer {THIRDWAVE_API_KEY}",
+                "x-api-key": THIRDWAVE_API_KEY,
+                "Accept": "application/json"
+            }
+            async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=5&pageSize=5", headers=tw_headers) as r:
                 if r.status == 200:
-                    for i in (await r.json()).get("rows", []):
-                        combined_rows.append({
-                            "phone": str(i.get("destinationNumber", "")),
-                            "msg": str(i.get("messageBody", "")),
-                            "otp": extract_otp(str(i.get("messageBody", "")), i.get("otp"))
-                        })
+                    res_json = await r.json()
+                    rows = res_json.get("rows", []) if isinstance(res_json, dict) else (res_json if isinstance(res_json, list) else [])
+                    for i in rows:
+                        phone = str(i.get("destinationNumber") or i.get("phone") or i.get("number") or "")
+                        msg = str(i.get("messageBody") or i.get("message") or i.get("text") or "")
+                        otp = extract_otp(msg, i.get("otp") or i.get("code"))
+                        if phone and msg:
+                            combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
 
     # 2. Fetch IPRN.pro Traffic
@@ -255,13 +315,13 @@ async def traffic_h(m: Message):
             async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=5", headers=headers) as r:
                 if r.status == 200:
                     res_data = await r.json()
-                    iprn_items = res_data.get("data", []) if isinstance(res_data, dict) else []
+                    iprn_items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else [])
                     for i in iprn_items:
-                        combined_rows.append({
-                            "phone": str(i.get("b_number", "")),
-                            "msg": str(i.get("message", "")),
-                            "otp": extract_otp(str(i.get("message", "")))
-                        })
+                        phone = str(i.get("b_number") or i.get("phone") or "")
+                        msg = str(i.get("message") or i.get("text") or "")
+                        otp = extract_otp(msg)
+                        if phone and msg:
+                            combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
 
     txt = "🔴 <b>Recent Live Traffic:</b>\n\n" + "".join([
@@ -325,36 +385,43 @@ async def status_h(m: Message):
 # --- DUAL PANEL WORKER (THIRDWAVE + IPRN.PRO) ---
 async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     """Helper to process matched OTPs from any provider."""
-    # Persistent Database check for OTP deduplication across restarts
-    if DATABASE_URL and HAS_PSYCOPG2:
-        exists = db("SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), fetch="one")
-    else:
-        exists = db("SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), fetch="one")
-    
+    exists = db("SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), fetch="one")
     if exists:
-        return  # Already processed in previous sessions or before restart!
+        return  # Skip already processed OTPs
 
     otp_code = extract_otp(body, raw_otp)
-    clean_num = re.sub(r"\D", "", str(phone))
+    c_phone = clean_digits(phone)
 
-    row = db("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), fetch="one")
-    srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
+    if not c_phone:
+        return
+
+    # Find assignment row using flexible phone lookup
+    row = find_assignment(c_phone)
+    
+    if row:
+        uid, srv, cntry, rate, assigned_num = row[0], row[1], row[2], row[3], row[4]
+    else:
+        uid, srv, cntry, rate, assigned_num = None, "OTP", "Service", DEFAULT_OTP_RATE, c_phone
 
     grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
     
     try:
-        await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=grp_kb, parse_mode="HTML")
-    except Exception: pass
+        await bot.send_message(
+            TELEGRAM_GROUP_ID, 
+            f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {html.escape(str(cntry))}\n🛒 <b>Service:</b> {html.escape(str(srv))}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(c_phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(str(otp_code))}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(str(body))}</code>", 
+            reply_markup=grp_kb, 
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"[GROUP MSG ERROR] {e}")
 
-    uid = row[0] if row else None
-
-    # Save OTP identifier in database log
+    # Save OTP identifier into persistent log
     if DATABASE_URL and HAS_PSYCOPG2:
         db("INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING", (otp_identifier, uid), commit=True)
     else:
         db("INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
 
-    if row and uid:
+    if uid:
         if DATABASE_URL and HAS_PSYCOPG2:
             db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (uid, rate, rate), commit=True)
         else:
@@ -373,71 +440,85 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
             else:
                 db("UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
         try:
-            await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
-        except Exception: pass
+            await bot.send_message(uid, f"🌐 <b>OTP Received ({html.escape(str(srv))} - {html.escape(str(cntry))})!</b>\n📱 <code>{html.escape(str(c_phone))}</code>\n🔑 Code: <code>{html.escape(str(otp_code))}</code>", parse_mode="HTML")
+        except Exception as e:
+            print(f"[USER MSG ERROR] {e}")
 
 async def poll_traffic():
     while True:
         try:
             if http_session and not http_session.closed:
-                #--- PANEL 1: THIRDWAVE --
+                
+                # --- PANEL 1: THIRDWAVE ---
+                if THIRDWAVE_API_KEY:
+                    try:
+                        tw_headers = {
+                            "Authorization": f"Bearer {THIRDWAVE_API_KEY}",
+                            "x-api-key": THIRDWAVE_API_KEY,
+                            "Accept": "application/json"
+                        }
+                        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=20&pageSize=20", headers=tw_headers) as r:
+                            if r.status == 200:
+                                res_json = await r.json()
+                                rows = res_json.get("rows", []) if isinstance(res_json, dict) else (res_json if isinstance(res_json, list) else [])
+                                
+                                for item in rows:
+                                    phone = str(item.get("destinationNumber") or item.get("phone") or item.get("number") or "")
+                                    body = str(item.get("messageBody") or item.get("message") or item.get("text") or "")
+                                    raw_otp = str(item.get("otp") or item.get("code") or "")
+                                    item_id = str(item.get("id") or item.get("_id") or phone)
 
-if THIRDWAVE_API_KEY:
+                                    if not phone or not body:
+                                        continue
 
-try:
+                                    mid = f"tw_{item_id}_{raw_otp or body[:15]}"
 
-async with http_session.ge t(f"{THIRDWAVE_BASE_URL}/traffic? pageSize=15", headers={"Authorization": f"Bearer (THIRDWAVE_API_KEY}"}) as r:
+                                    await process_incoming_otp(
+                                        otp_identifier=mid,
+                                        phone=phone,
+                                        body=body,
+                                        raw_otp=raw_otp
+                                    )
+                            else:
+                                print(f"[THIRDWAVE HTTP {r.status}] {await r.text()}")
+                    except Exception as tw_e: 
+                        print(f"[THIRDWAVE ERROR] {tw_e}")
 
-if r.status == 200:
-
-for item in (await
-
-mid
-
-r.json()).get("rows", []): = f"tw_{item.get('id') or item.get('destinationNumber')} _{item.get('otp')}"
-
-if mid in
-
-PROCESSED_OTPS: continue
-
-PROCESSED_OTPS.add(mid)
-
-await
-
-process_incoming_otp(
-
-phone=item.get("destinationNumber", ""),
-
-body=item.get("messageBody", ""),
-
-raw_otp=item.get("otp", "")
-
-)
-
-except Exception as tw_e: print(f"[THIRDWAVE ERROR] {tw_e}")
                 # --- PANEL 2: IPRN.PRO ---
                 if IPRN_API_KEY:
                     try:
-                        headers = {
+                        iprn_headers = {
                             "Authorization": f"Bearer {IPRN_API_KEY}",
                             "Content-Type": "application/json",
                             "Accept": "application/json"
                         }
-                        async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=15", headers=headers) as r:
+                        async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=20", headers=iprn_headers) as r:
                             if r.status == 200:
                                 res_data = await r.json()
-                                items = res_data.get("data", []) if isinstance(res_data, dict) else []
+                                items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else [])
                                 for item in items:
-                                    mid = f"iprn_{item.get('b_number')}_{item.get('created_at') or item.get('message')}"
+                                    phone = str(item.get("b_number") or item.get("phone") or "")
+                                    body = str(item.get("message") or item.get("text") or "")
+                                    created_at = str(item.get("created_at") or item.get("id") or body[:15])
+
+                                    if not phone or not body:
+                                        continue
+
+                                    mid = f"iprn_{phone}_{created_at}"
 
                                     await process_incoming_otp(
                                         otp_identifier=mid,
-                                        phone=item.get("b_number", ""),
-                                        body=item.get("message", "")
+                                        phone=phone,
+                                        body=body
                                     )
-                    except Exception as iprn_e: print(f"[IPRN ERROR] {iprn_e}")
+                            else:
+                                print(f"[IPRN HTTP {r.status}] {await r.text()}")
+                    except Exception as iprn_e: 
+                        print(f"[IPRN ERROR] {iprn_e}")
 
-        except Exception as e: print(f"[WORKER ERROR] {e}")
+        except Exception as e: 
+            print(f"[WORKER ERROR] {e}")
+            
         await asyncio.sleep(5)
 
 @asynccontextmanager
