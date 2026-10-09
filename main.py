@@ -89,46 +89,23 @@ else:
 for q in init_queries:
     db(q, commit=True)
 
+# Auto-migrate existing database tables if missing otp_identifier column
+try:
+    if DATABASE_URL and HAS_PSYCOPG2:
+        db("ALTER TABLE otp_logs ADD COLUMN IF NOT EXISTS otp_identifier TEXT UNIQUE;", commit=True)
+    else:
+        db("ALTER TABLE otp_logs ADD COLUMN otp_identifier TEXT UNIQUE;", commit=True)
+except Exception:
+    pass
+
 # Helpers & Keyboards
-def clean_digits(p):
-    return re.sub(r"\D", "", str(p or "").strip())
-
-def normalize_phone(p):
-    """Normalizes phone formats (e.g. 23407... vs 2347...)."""
-    digits = clean_digits(p)
-    if digits.startswith("2340") and len(digits) >= 13:
-        return "234" + digits[4:]
-    return digits
-
 def mask_phone(p): 
-    clean = clean_digits(p)
-    if not clean: return "****"
+    clean = re.sub(r"\D", "", str(p).strip())
     return clean[:2]+"****"+clean[-2:] if len(clean)<=7 else clean[:5]+"****"+clean[-4:]
 
 def extract_otp(b, f=""): 
     match = re.search(r'\b\d{4,8}\b', str(b))
     return str(f).strip() if (f and str(f) != "None") else (match.group(0) if match else "No Code")
-
-def find_assignment(phone):
-    """Finds assigned user by exact match or trailing digit suffix."""
-    c_num = clean_digits(phone)
-    n_num = normalize_phone(phone)
-    
-    # 1. Direct match
-    row = db("SELECT user_id, service, country, rate, phone_number FROM assignments WHERE phone_number = ?", (c_num,), fetch="one")
-    if row: return row
-
-    if n_num != c_num:
-        row = db("SELECT user_id, service, country, rate, phone_number FROM assignments WHERE phone_number = ?", (n_num,), fetch="one")
-        if row: return row
-
-    # 2. Suffix Match (Last 9 digits)
-    if len(c_num) >= 9:
-        suffix = f"%{c_num[-9:]}"
-        row = db("SELECT user_id, service, country, rate, phone_number FROM assignments WHERE phone_number LIKE ?", (suffix,), fetch="one")
-        if row: return row
-
-    return None
 
 def main_menu(): 
     return ReplyKeyboardMarkup(keyboard=[
@@ -165,7 +142,7 @@ async def add_num(m: Message):
     p = lines[0].split(maxsplit=3); srv, cntry = p[1].capitalize(), p[2].capitalize()
     rate = float(re.sub(r"[^\d.]", "", p[3])) if len(p) >= 4 and re.sub(r"[^\d.]", "", p[3]) else DEFAULT_OTP_RATE
     raw = [n for l in lines[1:] for n in l.split(",")]
-    nums = [clean_digits(n) for n in raw if clean_digits(n)]
+    nums = [re.sub(r"\D", "", n) for n in raw if re.sub(r"\D", "", n)]
     
     added = 0
     for n in nums:
@@ -185,7 +162,7 @@ async def add_num(m: Message):
 @dp.message(F.text.startswith("/delnumber"))
 async def del_num(m: Message):
     if m.from_user.id == ADMIN_ID and len(m.text.split()) > 1:
-        p = clean_digits(m.text.split()[1])
+        p = re.sub(r"\D", "", m.text.split()[1])
         r = (db("DELETE FROM stock WHERE phone_number = ?", (p,), fetch="rowcount", commit=True) or 0) + (db("DELETE FROM assignments WHERE phone_number = ?", (p,), fetch="rowcount", commit=True) or 0)
         await m.answer(f"✅ Removed {p}" if r else "❌ Not found", parse_mode="HTML")
 
@@ -256,7 +233,7 @@ async def supp_h(m: Message):
 async def srv_h(m: Message):
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
     rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
-    if not rows: return await m.answer("⚠️ Out of stock kindly be patient for stock update!", reply_markup=main_menu())
+    if not rows: return await m.answer("⚠️ Out of stock kindly be patient for stock upate!", reply_markup=main_menu())
     await m.answer("📲 Select service:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🔹 {s} ({c})", callback_data=f"s_{s}")] for s, c in rows]), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("s_"))
@@ -390,30 +367,22 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
         return  # Skip already processed OTPs
 
     otp_code = extract_otp(body, raw_otp)
-    c_phone = clean_digits(phone)
+    clean_num = re.sub(r"\D", "", str(phone))
 
-    if not c_phone:
+    if not clean_num:
         return
 
-    # Find assignment row using flexible phone lookup
-    row = find_assignment(c_phone)
-    
-    if row:
-        uid, srv, cntry, rate, assigned_num = row[0], row[1], row[2], row[3], row[4]
-    else:
-        uid, srv, cntry, rate, assigned_num = None, "OTP", "Service", DEFAULT_OTP_RATE, c_phone
+    row = db("SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), fetch="one")
+    srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
 
     grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
     
     try:
-        await bot.send_message(
-            TELEGRAM_GROUP_ID, 
-            f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {html.escape(str(cntry))}\n🛒 <b>Service:</b> {html.escape(str(srv))}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(c_phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(str(otp_code))}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(str(body))}</code>", 
-            reply_markup=grp_kb, 
-            parse_mode="HTML"
-        )
+        await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=grp_kb, parse_mode="HTML")
     except Exception as e:
         print(f"[GROUP MSG ERROR] {e}")
+
+    uid = row[0] if row else None
 
     # Save OTP identifier into persistent log
     if DATABASE_URL and HAS_PSYCOPG2:
@@ -421,7 +390,7 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     else:
         db("INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
 
-    if uid:
+    if row and uid:
         if DATABASE_URL and HAS_PSYCOPG2:
             db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (uid, rate, rate), commit=True)
         else:
@@ -440,7 +409,7 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
             else:
                 db("UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
         try:
-            await bot.send_message(uid, f"🌐 <b>OTP Received ({html.escape(str(srv))} - {html.escape(str(cntry))})!</b>\n📱 <code>{html.escape(str(c_phone))}</code>\n🔑 Code: <code>{html.escape(str(otp_code))}</code>", parse_mode="HTML")
+            await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
         except Exception as e:
             print(f"[USER MSG ERROR] {e}")
 
