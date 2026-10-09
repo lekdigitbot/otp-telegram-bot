@@ -129,7 +129,7 @@ async def add_num(m: Message):
         except Exception: pass
 
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
-    try: await bot.send_message(TELEGRAM_GROUP_ID, f"📢 <b>NEW STOCK UPDATE! 📢</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n💵 <b>Rate:</b> <code>${rate:.4f}</code> / OTP\n📱 <b>Added:</b> <code>{added}</code>", parse_mode="HTML")
+    try: await bot.send_message(TELEGRAM_GROUP_ID, f"📢 <b>NEW STOCK UPDATE! 📢</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n💵 <b>Rate:</b> <code>${rate:.4f}</code> / OTP\n📱 <b>Added:</b> <code>{added}</code>", press Getnumber from bot to start parse_mode="HTML")
     except Exception: pass
 
 @dp.message(F.text.startswith("/delnumber"))
@@ -193,7 +193,7 @@ async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=
 async def srv_h(m: Message):
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
     rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
-    if not rows: return await m.answer("⚠️ Out of stock kindly contact support if not update in 5min!", reply_markup=main_menu())
+    if not rows: return await m.answer("⚠️ Out of stock kindly be patient for stock upate!", reply_markup=main_menu())
     await m.answer("📲 Select service:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🔹 {s} ({c})", callback_data=f"s_{s}")] for s, c in rows]), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("s_"))
