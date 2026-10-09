@@ -388,6 +388,7 @@ async def ref_h(m: Message):
     row = db("SELECT COUNT(*), SUM(rewarded) FROM referrals WHERE referred_by = ?", (m.from_user.id,), fetch="one")
     tot, rwd = (row[0] if row and row[0] else 0), (row[1] if row and row[1] else 0)
     await m.answer(f"♾️ <b>REFERRALS</b>\n\n🔗 <code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n👥 <b>Invited:</b> <code>{tot}</code>\n💵 <b>Earned:</b> <code>${rwd * REFERRAL_BONUS:.2f}</code>", parse_mode="HTML")
+     f"📌 <b>Rule:</b> Your referred friend must complete at least <b>3 OTP transactions</b> for your bonus to be credited to your main balance.\n\n"
 
 @dp.message(F.text == "💸 WITHDRAW")
 async def wd_start(m: Message, state: FSMContext):
