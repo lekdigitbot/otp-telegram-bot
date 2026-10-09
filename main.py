@@ -380,22 +380,41 @@ async def poll_traffic():
     while True:
         try:
             if http_session and not http_session.closed:
-                # --- PANEL 1: THIRDWAVE ---
-                if THIRDWAVE_API_KEY:
-                    try:
-                        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=15", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}) as r:
-                            if r.status == 200:
-                                for item in (await r.json()).get("rows", []):
-                                    mid = f"tw_{item.get('id') or item.get('destinationNumber')}_{item.get('otp') or item.get('messageBody')}"
+                #--- PANEL 1: THIRDWAVE --
 
-                                    await process_incoming_otp(
-                                        otp_identifier=mid,
-                                        phone=item.get("destinationNumber", ""),
-                                        body=item.get("messageBody", ""),
-                                        raw_otp=item.get("otp", "")
-                                    )
-                    except Exception as tw_e: print(f"[THIRDWAVE ERROR] {tw_e}")
+if THIRDWAVE_API_KEY:
 
+try:
+
+async with http_session.ge t(f"{THIRDWAVE_BASE_URL}/traffic? pageSize=15", headers={"Authorization": f"Bearer (THIRDWAVE_API_KEY}"}) as r:
+
+if r.status == 200:
+
+for item in (await
+
+mid
+
+r.json()).get("rows", []): = f"tw_{item.get('id') or item.get('destinationNumber')} _{item.get('otp')}"
+
+if mid in
+
+PROCESSED_OTPS: continue
+
+PROCESSED_OTPS.add(mid)
+
+await
+
+process_incoming_otp(
+
+phone=item.get("destinationNumber", ""),
+
+body=item.get("messageBody", ""),
+
+raw_otp=item.get("otp", "")
+
+)
+
+except Exception as tw_e: print(f"[THIRDWAVE ERROR] {tw_e}")
                 # --- PANEL 2: IPRN.PRO ---
                 if IPRN_API_KEY:
                     try:
