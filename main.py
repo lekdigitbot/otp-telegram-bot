@@ -1,4 +1,4 @@
-import os, re, html, sqlite3, asyncio, aiohttp
+import os, re, html, sqlite3, asyncio, aiohttp, hashlib
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, F
@@ -155,9 +155,57 @@ async def add_num(m: Message):
         except Exception: pass
 
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
+    
+    # Styled Notification with Inline "Get Number" Blue Accent Button
+    stock_text = (
+        f"🎉 <b>New Numbers Added!</b>\n\n"
+        f"🔹 <b>Service:</b> {srv}\n"
+        f"🌍 <b>Country:</b> {cntry}\n"
+        f"📱 <b>Numbers:</b> <code>{added}</code> numbers added\n"
+        f"💵 <b>Rate:</b> <code>${rate:.4f}</code> per OTP"
+    )
+    stock_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}")
+    ]])
+
+    # 1. Broadcast to OTP Telegram Group
     try: 
-        await bot.send_message(TELEGRAM_GROUP_ID, f"📢 <b>NEW STOCK UPDATE! 📢</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n💵 <b>Rate:</b> <code>${rate:.4f}</code> / OTP\n📱 <b>Added:</b> <code>{added}</code>", parse_mode="HTML")
-    except Exception: pass
+        await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=stock_kb, parse_mode="HTML")
+    except Exception as e:
+        print(f"[GROUP STOCK ANNOUNCE ERROR] {e}")
+
+    # 2. Broadcast directly in Bot to all registered users
+    all_users = db("SELECT user_id FROM balances", fetch="all") or []
+    for user in all_users:
+        uid = user[0]
+        try:
+            await bot.send_message(uid, stock_text, reply_markup=stock_kb, parse_mode="HTML")
+            await asyncio.sleep(0.05) # Rate limit protection
+        except Exception: pass
+
+@dp.message(F.text.startswith("/broadcast"))
+async def handle_broadcast(m: Message):
+    """Admin Broadcast Command to all bot users."""
+    if m.from_user.id != ADMIN_ID: return
+    text_to_send = m.text.replace("/broadcast", "", 1).strip()
+    if not text_to_send:
+        return await m.answer("⚠️ Usage: `/broadcast <Your message here>`", parse_mode="Markdown")
+
+    all_users = db("SELECT user_id FROM balances", fetch="all") or []
+    sent_count = 0
+
+    await m.answer(f"⏳ Broadcasting message to {len(all_users)} user(s)...")
+
+    for user in all_users:
+        uid = user[0]
+        try:
+            await bot.send_message(uid, f"📢 <b>ANNOUNCEMENT:</b>\n\n{text_to_send}", parse_mode="HTML")
+            sent_count += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+
+    await m.answer(f"✅ Broadcast complete! Delivered to {sent_count} user(s).")
 
 @dp.message(F.text.startswith("/delnumber"))
 async def del_num(m: Message):
@@ -222,6 +270,13 @@ async def start_h(m: Message):
             else:
                 db("INSERT OR IGNORE INTO referrals (user_id, referred_by) VALUES (?, ?)", (m.from_user.id, int(m.text.split()[1])), commit=True)
         except Exception: pass
+
+    # Register user ID in database balance table to ensure broadcast delivery
+    if DATABASE_URL and HAS_PSYCOPG2:
+        db("INSERT INTO balances (user_id, balance) VALUES (?, 0.0) ON CONFLICT DO NOTHING", (m.from_user.id,), commit=True)
+    else:
+        db("INSERT OR IGNORE INTO balances (user_id, balance) VALUES (?, 0.0)", (m.from_user.id,), commit=True)
+
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Access Restricted! Join all groups:", reply_markup=force_join_kb(), parse_mode="HTML")
     await m.answer(f"👋 Welcome <b>{m.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!", reply_markup=main_menu(), parse_mode="HTML")
 
@@ -359,8 +414,6 @@ async def status_h(m: Message):
     medals = ["🥇", "🥈", "🥉"]
     await m.answer(f"📊 <b>STATUS & LEADERBOARD</b>\n\n📱 <b>Total (7d):</b> <code>{u_cnt}</code>\n\n🗓️ <b>Daily:</b>\n" + "".join([f"📅 {d}: <code>{c}</code>\n" for d, c in daily]) + "\n🏆 <b>Top Rank:</b>\n" + "".join([f"{medals[i]}: User <code>{u}</code> — <b>{c} OTPs</b>\n" for i, (u, c) in enumerate(top_3)]), parse_mode="HTML")
 
-import hashlib
-
 # --- DUAL PANEL WORKER (THIRDWAVE + IPRN.PRO) ---
 async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     """Helper to process matched OTPs from any provider."""
@@ -489,7 +542,7 @@ async def poll_traffic():
         except Exception as e: 
             print(f"[WORKER ERROR] {e}")
             
-        await asyncio.sleep(5) 
+        await asyncio.sleep(5)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
