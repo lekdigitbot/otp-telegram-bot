@@ -386,10 +386,22 @@ async def bal_h(m: Message):
 async def ref_h(m: Message):
     bot_info = await bot.get_me()
     row = db("SELECT COUNT(*), SUM(rewarded) FROM referrals WHERE referred_by = ?", (m.from_user.id,), fetch="one")
-    tot, rwd = (row[0] if row and row[0] else 0), (row[1] if row and row[1] else 0)
-    await m.answer(f"♾️ <b>REFERRALS</b>\n\n🔗 <code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n👥 <b>Invited:</b> <code>{tot}</code>\n💵 <b>Earned:</b> <code>${rwd * REFERRAL_BONUS:.2f}</code>", parse_mode="HTML")
-     f"📌 <b>Rule:</b> Your referred friend must complete at least <b>3 OTP transactions</b> for your bonus to be credited to your main balance.\n\n"
-
+    tot = row[0] if row and row[0] else 0
+    rwd = row[1] if row and row[1] else 0
+    
+    ref_text = (
+        f"♾️ <b>REFER AND EARN</b>\n\n"
+        f"Earn <b>${REFERRAL_BONUS:.2f}</b> for every friend you invite!\n\n"
+        f"📌 <b>Rule:</b> Your referred friend must complete at least <b>3 OTP transactions</b> for your bonus to be credited to your main balance.\n\n"
+        f"🔗 <b>Your Referral Link:</b>\n"
+        f"<code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n\n"
+        f"👥 <b>Total Invited:</b> <code>{tot}</code>\n"
+        f"💵 <b>Rewarded Referrals:</b> <code>{rwd}</code>\n"
+        f"💰 <b>Total Earned:</b> <code>${rwd * REFERRAL_BONUS:.2f}</code>"
+    )
+    
+    await m.answer(ref_text, parse_mode="HTML")
+    
 @dp.message(F.text == "💸 WITHDRAW")
 async def wd_start(m: Message, state: FSMContext):
     row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one"); bal = row[0] if row else 0.0
