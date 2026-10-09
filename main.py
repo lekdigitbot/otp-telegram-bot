@@ -17,9 +17,8 @@ except ImportError:
 # Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
-IPRN_API_KEY = os.getenv("IPRN_API_KEY")  # Added IPRN.pro API Key
+IPRN_API_KEY = os.getenv("IPRN_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip()
-     # postgresql://postgres:password@...
 RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0) or 0)
@@ -40,17 +39,16 @@ if not BOT_TOKEN:
     raise ValueError("❌ Missing BOT_TOKEN!")
 
 bot, dp = Bot(token=BOT_TOKEN), Dispatcher(storage=MemoryStorage())
-http_session, PROCESSED_OTPS, DB_FILE = None, set(), "/tmp/bot_data.db"
+http_session, DB_FILE = None, "/tmp/bot_data.db"
 
 class WithdrawalState(StatesGroup):
     waiting_for_details, waiting_for_amount = State(), State()
 
 # --- DATABASE CORE ENGINE ---
 def db(q, p=(), fetch=None, commit=False):
-    """Executes query on Supabase PostgreSQL if DATABASE_URL is set, else SQLite."""
+    """Executes query on PostgreSQL if DATABASE_URL is set, else SQLite."""
     use_pg = bool(DATABASE_URL and HAS_PSYCOPG2)
     
-    # Dynamic placeholder mapping (?, ?) -> (%s, %s) for PostgreSQL
     formatted_q = q.replace("?", "%s") if use_pg else q
 
     if use_pg:
@@ -78,7 +76,7 @@ if DATABASE_URL and HAS_PSYCOPG2:
         "CREATE TABLE IF NOT EXISTS assignments (phone_number TEXT PRIMARY KEY, user_id BIGINT, service TEXT, country TEXT, rate REAL DEFAULT 0.003)",
         "CREATE TABLE IF NOT EXISTS balances (user_id BIGINT PRIMARY KEY, balance REAL)",
         "CREATE TABLE IF NOT EXISTS referrals (user_id BIGINT PRIMARY KEY, referred_by BIGINT, otp_count INT DEFAULT 0, rewarded INT DEFAULT 0)",
-        "CREATE TABLE IF NOT EXISTS otp_logs (id SERIAL PRIMARY KEY, user_id BIGINT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        "CREATE TABLE IF NOT EXISTS otp_logs (id SERIAL PRIMARY KEY, otp_identifier TEXT UNIQUE, user_id BIGINT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     ]
 else:
     init_queries = [
@@ -86,7 +84,7 @@ else:
         "CREATE TABLE IF NOT EXISTS assignments (phone_number TEXT PRIMARY KEY, user_id INTEGER, service TEXT, country TEXT, rate REAL DEFAULT 0.003)",
         "CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)",
         "CREATE TABLE IF NOT EXISTS referrals (user_id INTEGER PRIMARY KEY, referred_by INTEGER, otp_count INTEGER DEFAULT 0, rewarded INTEGER DEFAULT 0)",
-        "CREATE TABLE IF NOT EXISTS otp_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)"
+        "CREATE TABLE IF NOT EXISTS otp_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, otp_identifier TEXT UNIQUE, user_id INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)"
     ]
 
 for q in init_queries:
@@ -112,7 +110,7 @@ async def check_user_joined(uid):
 async def add_num(m: Message):
     if m.from_user.id != ADMIN_ID: return
     lines = [l.strip() for l in m.text.strip().split("\n") if l.strip()]
-    if len(lines) < 1 or len(lines[0].split(maxsplit=3)) < 3: return await m.answer("⚠️️ Usage: <code>/addnumber Srv Cntry Rate\nNum1,Num2</code>", parse_mode="HTML")
+    if len(lines) < 1 or len(lines[0].split(maxsplit=3)) < 3: return await m.answer("⚠ Usage: <code>/addnumber Srv Cntry Rate\nNum1,Num2</code>", parse_mode="HTML")
     p = lines[0].split(maxsplit=3); srv, cntry = p[1].capitalize(), p[2].capitalize()
     rate = float(re.sub(r"[^\d.]", "", p[3])) if len(p) >= 4 and re.sub(r"[^\d.]", "", p[3]) else DEFAULT_OTP_RATE
     raw = [n for l in lines[1:] for n in l.split(",")]
@@ -158,17 +156,29 @@ async def cb_check(c: CallbackQuery):
 
 @dp.callback_query(F.data.startswith(("wd_accept_", "wd_reject_")))
 async def cb_wd(c: CallbackQuery):
-    if c.from_user.id != ADMIN_ID: return
-    act, _, uid, amt = c.data.split("_"); uid, amt = int(uid), float(amt)
+    if c.from_user.id != ADMIN_ID: 
+        return await c.answer("Unauthorized", show_alert=True)
+    
+    data_parts = c.data.split("_")
+    act = data_parts[0] + "_" + data_parts[1]
+    uid = int(data_parts[2])
+    amt = float(data_parts[3])
+
     if act == "wd_accept":
-        bal = db("SELECT balance FROM balances WHERE user_id = ?", (uid,), fetch="one")
-        if bal and bal[0] >= amt:
+        bal_row = db("SELECT balance FROM balances WHERE user_id = ?", (uid,), fetch="one")
+        bal = bal_row[0] if bal_row else 0.0
+        
+        if bal >= amt:
             db("UPDATE balances SET balance = balance - ? WHERE user_id = ?", (amt, uid), commit=True)
+            await c.answer("Withdrawal Approved!")
             await c.message.edit_text(f"✅ APPROVED & PAID! User: <code>{uid}</code> (${amt:.2f})", parse_mode="HTML")
             try: await bot.send_message(uid, f"🎉 Withdrawal of <b>${amt:.2f}</b> approved!", parse_mode="HTML")
             except Exception: pass
-        else: await c.message.edit_text("❌ Failed: Insufficient balance.", parse_mode="HTML")
+        else:
+            await c.answer("Insufficient balance!", show_alert=True)
+            await c.message.edit_text(f"❌ Failed: Insufficient balance. User balance: ${bal:.2f}", parse_mode="HTML")
     else:
+        await c.answer("Withdrawal Rejected.")
         await c.message.edit_text(f"❌ REJECTED! User: <code>{uid}</code> (${amt:.2f})", parse_mode="HTML")
         try: await bot.send_message(uid, f"❌ Withdrawal request for <b>${amt:.2f}</b> rejected.", parse_mode="HTML")
         except Exception: pass
@@ -221,7 +231,7 @@ async def num_assign(c: CallbackQuery):
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def traffic_h(m: Message):
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Join groups first!", reply_markup=force_join_kb())
-    if not http_session or http_session.closed: return await m.answer("⚠️️ Session starting...", reply_markup=main_menu())
+    if not http_session or http_session.closed: return await m.answer("⚠ Session starting...", reply_markup=main_menu())
     
     combined_rows = []
 
@@ -313,8 +323,17 @@ async def status_h(m: Message):
     await m.answer(f"📊 <b>STATUS & LEADERBOARD</b>\n\n📱 <b>Total (7d):</b> <code>{u_cnt}</code>\n\n🗓️ <b>Daily:</b>\n" + "".join([f"📅 {d}: <code>{c}</code>\n" for d, c in daily]) + "\n🏆 <b>Top Rank:</b>\n" + "".join([f"{medals[i]}: User <code>{u}</code> — <b>{c} OTPs</b>\n" for i, (u, c) in enumerate(top_3)]), parse_mode="HTML")
 
 # --- DUAL PANEL WORKER (THIRDWAVE + IPRN.PRO) ---
-async def process_incoming_otp(phone, body, raw_otp=""):
+async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     """Helper to process matched OTPs from any provider."""
+    # Persistent Database check for OTP deduplication across restarts
+    if DATABASE_URL and HAS_PSYCOPG2:
+        exists = db("SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), fetch="one")
+    else:
+        exists = db("SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), fetch="one")
+    
+    if exists:
+        return  # Already processed in previous sessions or before restart!
+
     otp_code = extract_otp(body, raw_otp)
     clean_num = re.sub(r"\D", "", str(phone))
 
@@ -327,14 +346,19 @@ async def process_incoming_otp(phone, body, raw_otp=""):
         await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=grp_kb, parse_mode="HTML")
     except Exception: pass
 
-    if row:
-        uid = row[0]
+    uid = row[0] if row else None
+
+    # Save OTP identifier in database log
+    if DATABASE_URL and HAS_PSYCOPG2:
+        db("INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING", (otp_identifier, uid), commit=True)
+    else:
+        db("INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
+
+    if row and uid:
         if DATABASE_URL and HAS_PSYCOPG2:
             db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (uid, rate, rate), commit=True)
         else:
             db("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (uid, rate, rate), commit=True)
-        
-        db("INSERT INTO otp_logs (user_id) VALUES (?)", (uid,), commit=True)
         
         ref = db("SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (uid,), fetch="one")
         if ref and ref[2] == 0:
@@ -362,11 +386,10 @@ async def poll_traffic():
                         async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?pageSize=15", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}"}) as r:
                             if r.status == 200:
                                 for item in (await r.json()).get("rows", []):
-                                    mid = f"tw_{item.get('id') or item.get('destinationNumber')}_{item.get('otp')}"
-                                    if mid in PROCESSED_OTPS: continue
-                                    PROCESSED_OTPS.add(mid)
+                                    mid = f"tw_{item.get('id') or item.get('destinationNumber')}_{item.get('otp') or item.get('messageBody')}"
 
                                     await process_incoming_otp(
+                                        otp_identifier=mid,
                                         phone=item.get("destinationNumber", ""),
                                         body=item.get("messageBody", ""),
                                         raw_otp=item.get("otp", "")
@@ -386,12 +409,10 @@ async def poll_traffic():
                                 res_data = await r.json()
                                 items = res_data.get("data", []) if isinstance(res_data, dict) else []
                                 for item in items:
-                                    # Unique ID based on b_number + created_at timestamp
-                                    mid = f"iprn_{item.get('b_number')}_{item.get('created_at')}"
-                                    if mid in PROCESSED_OTPS: continue
-                                    PROCESSED_OTPS.add(mid)
+                                    mid = f"iprn_{item.get('b_number')}_{item.get('created_at') or item.get('message')}"
 
                                     await process_incoming_otp(
+                                        otp_identifier=mid,
                                         phone=item.get("b_number", ""),
                                         body=item.get("message", "")
                                     )
