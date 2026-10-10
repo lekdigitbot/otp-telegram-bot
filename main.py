@@ -162,7 +162,7 @@ def build_countries_keyboard(srv):
 
     keyboard = []
     for cntry, rate, avail in rows:
-        keyboard.append([InlineKeyboardButton(text=f"🇳🇬 {cntry} | ${rate:.3f}/OTP", callback_data=f"c_{srv}_{cntry}")])
+        keyboard.append([InlineKeyboardButton(text=f" {cntry} | ${rate:.3f}/OTP", callback_data=f"c_{srv}_{cntry}")])
 
     keyboard.append([InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard), f"📌 <b>Select country for {srv.upper()}:</b>"
@@ -314,7 +314,7 @@ async def num_assign(c: CallbackQuery):
             db("INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)", (n, c.from_user.id, srv, cntry, rate), commit=True)
 
     assign_text = (
-        f"🇳🇬 <b>{cntry} Number Assigned:</b>\n\n"
+        f" <b>{cntry} Number Assigned:</b>\n\n"
         f"⏳ Waiting for OTP...\n"
         f"Per OTP Rate: <b>${rate:.3f}</b>\n"
     )
