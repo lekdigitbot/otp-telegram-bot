@@ -136,16 +136,16 @@ async def check_user_joined(uid):
 
 def build_services_keyboard():
     """Builds grid of available services from active stock."""
-    rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 2", fetch="all") or []
+    rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= 3", fetch="all") or []
     if not rows:
         return None, "⚠️ <b>Out of stock!</b> Kindly be patient for stock updates."
     
     keyboard = []
-    # Build 2-column grid layout for services
+    # Build 3-column grid layout for services
     current_row = []
     for srv, cnt in rows:
         current_row.append(InlineKeyboardButton(text=f"🔹 {srv.upper()}", callback_data=f"s_{srv}"))
-        if len(current_row) == 2:
+        if len(current_row) == 3:
             keyboard.append(current_row)
             current_row = []
     if current_row:
@@ -156,7 +156,7 @@ def build_services_keyboard():
 
 def build_countries_keyboard(srv):
     """Builds country options for a chosen service."""
-    rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= 2", (srv,), fetch="all") or []
+    rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= 3", (srv,), fetch="all") or []
     if not rows:
         return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
 
