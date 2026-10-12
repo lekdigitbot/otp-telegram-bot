@@ -109,30 +109,18 @@ def extract_otp(b, f=""):
 
 def main_menu(): 
     return ReplyKeyboardMarkup(keyboard=[
-        [
-            KeyboardButton(text="📱 GET NUMBER", style="primary"), 
-            KeyboardButton(text="🔴 LIVE TRAFFIC", style="primary")
-        ], 
-        [
-            KeyboardButton(text="💸 WITHDRAW", style="primary"), 
-            KeyboardButton(text="💰 BALANCE", style="primary")
-        ], 
-        [
-            KeyboardButton(text="♾️ REFER AND EARN", style="primary"), 
-            KeyboardButton(text="💀 SUPPORT", style="primary")
-        ], 
-        [
-            KeyboardButton(text="📊 STATUS", style="primary")
-        ]
+        [KeyboardButton(text="📱 GET NUMBER", style="primary"), KeyboardButton(text="🔴 LIVE TRAFFIC", style="primary")],
+        [KeyboardButton(text="💸 WITHDRAW", style="primary"), KeyboardButton(text="💰 BALANCE", style="primary")],
+        [KeyboardButton(text="♾️ REFER AND EARN", style="primary"), KeyboardButton(text="💀 SUPPORT", style="primary")],
+        [KeyboardButton(text="📊 STATUS", style="primary")]
     ], resize_keyboard=True, is_persistent=True)
-    
 
 def force_join_kb(): 
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK) style="primary"], 
-        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK) style="primary"], 
-        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK) style="primary"], 
-        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership") style="success"]
+        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK, style="primary")], 
+        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK, style="primary")], 
+        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK, style="primary")], 
+        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership", style="success")]
     ])
 
 async def check_user_joined(uid):
@@ -203,7 +191,7 @@ async def add_num(m: Message):
 
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
     
-    bot_info = await bot.get_me()
+        bot_info = await bot.get_me()
     stock_text = (
         f"🎉 <b>New Stock Added!</b>\n\n"
         f"🔹 <b>Service:</b> {srv}\n"
@@ -214,12 +202,13 @@ async def add_num(m: Message):
     )
 
     group_stock_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}")
+        InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}", style="success")
     ]])
 
     bot_stock_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}")
+        InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}", style="success")
     ]])
+
 
     if TELEGRAM_GROUP_ID:
         try: 
@@ -290,60 +279,44 @@ async def cb_close(c: CallbackQuery):
     try: await c.message.delete()
     except Exception: pass
 
-@dp.callback_query(F.data == "cb_services_list")
-async def cb_back_services(c: CallbackQuery):
-    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
-    kb, txt = build_services_keyboard()
-    if not kb:
-        return await c.answer("⚠️ Out of stock!", show_alert=True)
-    await c.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("s_"))
-async def srv_sel(c: CallbackQuery):
-    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
-    srv = c.data[2:]
-    kb, txt = build_countries_keyboard(srv)
-    if not kb:
-        return await c.answer(f"⚠️ Out of stock for {srv}!", show_alert=True)
-    
-    # Edit current message directly instead of creating a new one
-    await c.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+# Change this admin setting to assign 2, 3, 4, or up to 10 numbers at once!
+ASSIGN_COUNT = 2 
 
 @dp.callback_query(F.data.startswith("c_"))
 async def num_assign(c: CallbackQuery):
-    if not await check_user_joined(c.from_user.id): return await c.answer("⚠️ Join groups first!", show_alert=True)
+    if not await check_user_joined(c.from_user.id): 
+        return await c.answer("⚠️ Join groups first!", show_alert=True)
+    
     _, srv, cntry = c.data.split("_", 2)
-    rows = db("SELECT phone_number, rate FROM stock WHERE service = ? AND country = ? LIMIT 2", (srv, cntry), fetch="all") or []
-    if len(rows) < 2: 
+    rows = db(f"SELECT phone_number, rate FROM stock WHERE service = ? AND country = ? LIMIT {ASSIGN_COUNT}", (srv, cntry), fetch="all") or []
+    if len(rows) < 1: 
         return await c.answer("⚠️ Out of stock for selected country!", show_alert=True)
     
-    nums, rate = [rows[0][0], rows[1][0]], rows[0][1]
+    nums, rate = [r[0] for r in rows], rows[0][1]
+    
     for n in nums:
         db("DELETE FROM stock WHERE phone_number = ?", (n,), commit=True)
-        if DATABASE_URL and HAS_PSYCOPG2:
-            db("INSERT INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?) ON CONFLICT (phone_number) DO UPDATE SET user_id=EXCLUDED.user_id, service=EXCLUDED.service, country=EXCLUDED.country, rate=EXCLUDED.rate", (n, c.from_user.id, srv, cntry, rate), commit=True)
-        else:
-            db("INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)", (n, c.from_user.id, srv, cntry, rate), commit=True)
+        q = "INSERT INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?) ON CONFLICT (phone_number) DO UPDATE SET user_id=EXCLUDED.user_id, service=EXCLUDED.service, country=EXCLUDED.country, rate=EXCLUDED.rate" if DATABASE_URL and HAS_PSYCOPG2 else "INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)"
+        db(q, (n, c.from_user.id, srv, cntry, rate), commit=True)
+
+    rem_count = (db("SELECT COUNT(*) FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="one") or [0])[0]
 
     assign_text = (
-        f" <b>{cntry} Number Assigned:</b>\n\n"
+        f"🇳🇬 <b>{cntry} Number Assigned:</b>\n\n"
         f"⏳ Waiting for OTP...\n"
         f"Per OTP Rate: <b>${rate:.3f}</b>\n"
+        f"📦 <i>Remaining Stock:</i> <code>{rem_count} available</code>\n"
     )
 
-    assign_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"➕ +{nums[0]}", copy_text={"text": f"+{nums[0]}"})],
-        [InlineKeyboardButton(text=f"➕ +{nums[1]}", copy_text={"text": f"+{nums[1]}"})],
-        [
-            InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}"),
-            InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}")
-        ],
-        [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK)],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list")]
-    ])
+    kb = (
+        [[InlineKeyboardButton(text=f"➕ +{n}", copy_text={"text": f"+{n}"}, style="success")] for n in nums] +
+        [[InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}", style="primary"),
+          InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}", style="primary")] ] +
+        [[InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK, style="success"),
+          InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list", style="danger")]]
+    )
 
-    # Edit in-place to display assigned numbers without opening new chat blocks
-    await c.message.edit_text(assign_text, reply_markup=assign_kb, parse_mode="HTML")
+    await c.message.edit_text(assign_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith(("wd_accept_", "wd_reject_")))
 async def cb_wd(c: CallbackQuery):
