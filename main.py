@@ -129,10 +129,10 @@ def main_menu():
 
 def force_join_kb(): 
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK)], 
-        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK)], 
-        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK)], 
-        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership")]
+        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK) style="primary"], 
+        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK) style="primary"], 
+        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK) style="primary"], 
+        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership") style="success"]
     ])
 
 async def check_user_joined(uid):
