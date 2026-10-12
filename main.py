@@ -109,11 +109,23 @@ def extract_otp(b, f=""):
 
 def main_menu(): 
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")], 
-        [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")], 
-        [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")], 
-        [KeyboardButton(text="📊 STATUS")]
-    ], resize_keyboard=True)
+        [
+            KeyboardButton(text="📱 GET NUMBER", style="primary"), 
+            KeyboardButton(text="🔴 LIVE TRAFFIC", style="primary")
+        ], 
+        [
+            KeyboardButton(text="💸 WITHDRAW", style="primary"), 
+            KeyboardButton(text="💰 BALANCE", style="primary")
+        ], 
+        [
+            KeyboardButton(text="♾️ REFER AND EARN", style="primary"), 
+            KeyboardButton(text="💀 SUPPORT", style="primary")
+        ], 
+        [
+            KeyboardButton(text="📊 STATUS", style="primary")
+        ]
+    ], resize_keyboard=True, is_persistent=True)
+    
 
 def force_join_kb(): 
     return InlineKeyboardMarkup(inline_keyboard=[
