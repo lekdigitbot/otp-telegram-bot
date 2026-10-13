@@ -275,26 +275,47 @@ async def srv_h(m: Message):
 
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def traffic_h(m: Message):
-    if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Access Restricted! You left one of our required groups. Please join them back to continue:", reply_markup=force_join_kb(), parse_mode="HTML")
-    if not http_session or http_session.closed: return await m.answer("⚠ Session starting...", reply_markup=main_menu())
+    if not await check_user_joined(m.from_user.id): 
+        return await m.answer("⚠️ Access Restricted! Join required groups:", reply_markup=force_join_kb(), parse_mode="HTML")
+    if not http_session or http_session.closed: 
+        return await m.answer("⚠ Session starting...", reply_markup=main_menu())
+    
     combined_rows = []
+    
     if THIRDWAVE_API_KEY:
         try:
-            async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=5&pageSize=5", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "x-api-key": THIRDWAVE_API_KEY, "Accept": "application/json"}) as r:
+            async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=20&pageSize=20", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "x-api-key": THIRDWAVE_API_KEY, "Accept": "application/json"}) as r:
                 if r.status == 200:
-                    for i in ((res := await r.json()).get("rows", []) if isinstance(res, dict) else res):
-                        if (phone := str(i.get("destinationNumber") or i.get("phone") or i.get("number") or "")) and (msg := str(i.get("messageBody") or i.get("message") or i.get("text") or "")):
-                            combined_rows.append({"phone": phone, "msg": msg, "otp": extract_otp(msg, i.get("otp") or i.get("code"))})
+                    res = await r.json()
+                    rows = res.get("rows", []) if isinstance(res, dict) else (res if isinstance(res, list) else [])
+                    for i in rows:
+                        phone = str(i.get("destinationNumber") or i.get("phone") or i.get("number") or i.get("b_number") or "")
+                        msg = str(i.get("messageBody") or i.get("message") or i.get("text") or i.get("body") or "")
+                        otp = extract_otp(msg, i.get("otp") or i.get("code"))
+                        if phone and msg:
+                            combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
+
     if IPRN_API_KEY:
         try:
-            async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=5", headers={"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
+            async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=20", headers={"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
                 if r.status == 200:
-                    for i in ((res := await r.json()).get("data", []) if isinstance(res, dict) else res):
-                        if (phone := str(i.get("b_number") or i.get("phone") or "")) and (msg := str(i.get("message") or i.get("text") or "")):
-                            combined_rows.append({"phone": phone, "msg": msg, "otp": extract_otp(msg)})
+                    res = await r.json()
+                    items = res.get("data", []) if isinstance(res, dict) else (res if isinstance(res, list) else [])
+                    for i in items:
+                        phone = str(i.get("b_number") or i.get("phone") or i.get("number") or "")
+                        msg = str(i.get("message") or i.get("text") or i.get("body") or "")
+                        otp = extract_otp(msg)
+                        if phone and msg:
+                            combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
-    txt = "🔴 <b>Recent Live Traffic:</b>\n\n" + "".join([f"📱 <b>Num:</b> <code>{html.escape(mask_phone(i['phone']))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(i['otp'])}</code>\n💬 <code>{html.escape(i['msg'][:40])}</code>\n───\n" for i in combined_rows[:5]])
+
+    txt = "🔴 <b>Recent Live Traffic:</b>\n\n" + "".join([
+        f"📱 <b>Num:</b> <code>{html.escape(mask_phone(i['phone']))}</code>\n"
+        f"🔑 <b>OTP:</b> <code>{html.escape(i['otp'])}</code>\n"
+        f"💬 <code>{html.escape(i['msg'][:40])}</code>\n───\n" 
+        for i in combined_rows[:5]
+    ])
     await m.answer(txt if combined_rows else "No traffic.", reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(F.text == "💰 BALANCE")
