@@ -89,7 +89,7 @@ def build_services_keyboard():
 def build_countries_keyboard(srv):
     rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= ?", (srv, ASSIGN_COUNT), fetch="all") or []
     if not rows: return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
-    kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
+    kb = [[InlineKeyboardButton(text=f"🇳🇬 {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
     return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
 @dp.message(F.text.startswith("/addnumber"))
@@ -196,7 +196,6 @@ async def num_assign(c: CallbackQuery):
 
     rem_count = (db("SELECT COUNT(*) FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="one") or [0])[0]
     
-    # Updated keyboard layout matching your reference image
     kb = [
         [InlineKeyboardButton(text=f"➕ +{n}", copy_text={"text": f"+{n}"}, style="success")] for n in nums
     ] + [
@@ -206,7 +205,7 @@ async def num_assign(c: CallbackQuery):
         [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list", style="danger")]
     ]
     
-    await c.message.edit_text(f" <b>{cntry} Number Assigned:</b>\n\n⏳ Waiting for OTP...\nPer OTP Rate: <b>${rate:.3f}</b>\n📦 <i>Remaining Stock:</i> <code>{rem_count}</code>\n", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await c.message.edit_text(f"🇳🇬 <b>{cntry} Number Assigned:</b>\n\n⏳ Waiting for OTP...\nPer OTP Rate: <b>${rate:.3f}</b>\n📦 <i>Remaining Stock:</i> <code>{rem_count}</code>\n", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith(("wd_accept_", "wd_reject_")))
 async def cb_wd(c: CallbackQuery):
@@ -300,7 +299,7 @@ async def wd_dtls(m: Message, state: FSMContext):
 async def wd_amt(m: Message, state: FSMContext):
     bal = (db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one") or [0.0])[0]
     try: amt = float(m.text.strip())
-    except ValueError: return await m.answer("⚠️ Amount below min withdrawal:")
+    except ValueError: return await m.answer("⚠️ Enter valid number:")
     if amt < MIN_WITHDRAWAL or amt > bal: return await m.answer(f"⚠️ Invalid amount! Max: <code>${bal:.2f}</code>", parse_mode="HTML")
     dtls = (await state.get_data()).get("details"); await state.clear(); await m.answer("✅ Request Submitted!")
     try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}", style="danger")]]))
@@ -321,28 +320,62 @@ async def status_h(m: Message):
     await m.answer(f"📊 <b>STATUS & LEADERBOARD</b>\n\n📱 <b>Total (7d):</b> <code>{u_cnt}</code>\n\n🗓️ <b>Daily:</b>\n" + "".join([f"📅 {d}: <code>{c}</code>\n" for d, c in daily]) + "\n🏆 <b>Top Rank:</b>\n" + "".join([f"{medals[i]}: User <code>{u}</code> — <b>{c} OTPs</b>\n" for i, (u, c) in enumerate(top_3)]), parse_mode="HTML")
 
 async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
-    if await asyncio.to_thread(db, "SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), "one"): return
-    otp_code, clean_num = extract_otp(body, raw_otp), re.sub(r"\D", "", str(phone))
-    if not clean_num: return
+    exists = await asyncio.to_thread(db, "SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), "one")
+    if exists:
+        return
+
+    otp_code = extract_otp(body, raw_otp)
+    clean_num = re.sub(r"\D", "", str(phone))
+
+    if not clean_num:
+        return
+
     row = await asyncio.to_thread(db, "SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), "one")
     uid = row[0] if row else None
-    db(("INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING" if use_pg else "INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)"), (otp_identifier, uid), commit=True)
+
+    if use_pg:
+        await asyncio.to_thread(db, "INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING", (otp_identifier, uid), commit=True)
+    else:
+        await asyncio.to_thread(db, "INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
+
     srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
+
+    grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK, style="primary"), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK, style="success")]])
     
-    try: await bot.send_message(TELEGRAM_GROUP_ID, f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK, style="primary"), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK, style="success")]]), parse_mode="HTML")
-    except Exception: pass
+    if TELEGRAM_GROUP_ID:
+        try:
+            await bot.send_message(
+                TELEGRAM_GROUP_ID, 
+                f"🔥 <b>New OTP Received! 🔥</b>\n\n🌍 <b>Country:</b> {cntry}\n🛒 <b>Service:</b> {srv}\n📱 <b>Number:</b> <code>+{html.escape(mask_phone(phone))}</code>\n🔑 <b>OTP:</b> <code>{html.escape(otp_code)}</code>\n\n✉️ <b>Message:</b>\n<code>{html.escape(body)}</code>", 
+                reply_markup=grp_kb, 
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            print(f"[GROUP MSG ERROR] {e}")
 
     if row and uid:
-        db(("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?" if use_pg else "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?"), (uid, rate, rate), commit=True)
-        if (ref := await asyncio.to_thread(db, "SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (uid,), "one")) and ref[2] == 0:
+        if use_pg:
+            await asyncio.to_thread(db, "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (uid, rate, rate), commit=True)
+        else:
+            await asyncio.to_thread(db, "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (uid, rate, rate), commit=True)
+        
+        ref = await asyncio.to_thread(db, "SELECT referred_by, otp_count, rewarded FROM referrals WHERE user_id = ?", (uid,), "one")
+        if ref and ref[2] == 0:
             if ref[1] + 1 >= 3:
-                db("UPDATE referrals SET otp_count = 3, rewarded = 1 WHERE user_id = ?", (uid,), commit=True)
-                db(("INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?" if use_pg else "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?"), (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
+                await asyncio.to_thread(db, "UPDATE referrals SET otp_count = 3, rewarded = 1 WHERE user_id = ?", (uid,), commit=True)
+                if use_pg:
+                    await asyncio.to_thread(db, "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
+                else:
+                    await asyncio.to_thread(db, "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (ref[0], REFERRAL_BONUS, REFERRAL_BONUS), commit=True)
                 try: await bot.send_message(ref[0], f"🎉 Referral Bonus Credited! Earned <b>${REFERRAL_BONUS:.2f}</b>!", parse_mode="HTML")
                 except Exception: pass
-            else: db("UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
-        try: await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
-        except Exception: pass
+            else:
+                await asyncio.to_thread(db, "UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
+
+        try:
+            await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
+        except Exception as e:
+            print(f"[USER MSG ERROR] {e}")
 
 async def poll_traffic():
     while True:
@@ -352,19 +385,33 @@ async def poll_traffic():
                     try:
                         async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=50&pageSize=50", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "x-api-key": THIRDWAVE_API_KEY, "Accept": "application/json"}) as r:
                             if r.status == 200:
-                                for item in ((res := await r.json()).get("rows", []) if isinstance(res, dict) else res):
-                                    if (phone := str(item.get("destinationNumber") or item.get("phone") or item.get("number") or "")) and (body := str(item.get("messageBody") or item.get("message") or item.get("text") or "")):
-                                        await process_incoming_otp(hashlib.md5(f"tw_{phone}_{body.strip()}".encode()).hexdigest(), phone, body, str(item.get("otp") or item.get("code") or ""))
-                    except Exception: pass
+                                res_json = await r.json()
+                                rows = res_json.get("rows", []) if isinstance(res_json, dict) else (res_json if isinstance(res_json, list) else [])
+                                for item in rows:
+                                    phone = str(item.get("destinationNumber") or item.get("phone") or item.get("number") or "")
+                                    body = str(item.get("messageBody") or item.get("message") or item.get("text") or "")
+                                    raw_otp = str(item.get("otp") or item.get("code") or "")
+                                    if not phone or not body: continue
+                                    unique_str = f"tw_{phone}_{body.strip()}"
+                                    mid = hashlib.md5(unique_str.encode()).hexdigest()
+                                    await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=raw_otp)
+                    except Exception as tw_e: print(f"[THIRDWAVE ERROR] {tw_e}")
+
                 if IPRN_API_KEY:
                     try:
                         async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=50", headers={"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
                             if r.status == 200:
-                                for item in ((res := await r.json()).get("data", []) if isinstance(res, dict) else res):
-                                    if (phone := str(item.get("b_number") or item.get("phone") or "")) and (body := str(item.get("message") or item.get("text") or "")):
-                                        await process_incoming_otp(hashlib.md5(f"iprn_{phone}_{body.strip()}".encode()).hexdigest(), phone, body)
-                    except Exception: pass
-        except Exception: pass
+                                res_data = await r.json()
+                                items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else [])
+                                for item in items:
+                                    phone = str(item.get("b_number") or item.get("phone") or "")
+                                    body = str(item.get("message") or item.get("text") or "")
+                                    if not phone or not body: continue
+                                    unique_str = f"iprn_{phone}_{body.strip()}"
+                                    mid = hashlib.md5(unique_str.encode()).hexdigest()
+                                    await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
+                    except Exception as iprn_e: print(f"[IPRN ERROR] {iprn_e}")
+        except Exception as e: print(f"[WORKER ERROR] {e}")
         await asyncio.sleep(1.0)
 
 @asynccontextmanager
@@ -382,7 +429,8 @@ app = FastAPI(lifespan=lifespan)
 @app.post("/")
 @app.post("/telegram-webhook")
 async def process_telegram_update(request: Request):
-    await dp.feed_update(bot, Update.model_validate(await request.json(), context={"bot": bot}))
+    data = await request.json()
+    await dp.feed_update(bot, Update.model_validate(data, context={"bot": bot}))
     return {"status": "ok"}
 
 @app.get("/")
