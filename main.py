@@ -89,31 +89,55 @@ def build_services_keyboard():
 def build_countries_keyboard(srv):
     rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= ?", (srv, ASSIGN_COUNT), fetch="all") or []
     if not rows: return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
-    kb = [[InlineKeyboardButton(text=f"🇳🇬 {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
+    kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
     return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
 @dp.message(F.text.startswith("/addnumber"))
 async def add_num(m: Message):
     if m.from_user.id != ADMIN_ID: return
     lines = [l.strip() for l in m.text.strip().split("\n") if l.strip()]
-    if len(lines) < 1 or len(lines[0].split(maxsplit=3)) < 3: return await m.answer("⚠ Usage: <code>/addnumber Srv Cntry Rate\nNum1,Num2</code>", parse_mode="HTML")
-    p = lines[0].split(maxsplit=3); srv, cntry = p[1].capitalize(), p[2].capitalize()
-    rate = float(re.sub(r"[^\d.]", "", p[3])) if len(p) >= 4 and re.sub(r"[^\d.]", "", p[3]) else DEFAULT_OTP_RATE
-    nums = [re.sub(r"\D", "", n) for l in lines[1:] for n in l.split(",") if re.sub(r"\D", "", n)]
+    if len(lines) < 1 or len(lines[0].split(maxsplit=3)) < 3: 
+        return await m.answer("⚠ Usage: <code>/addnumber Srv Cntry Rate\nNum1,Num2</code>", parse_mode="HTML")
     
-    added = sum(1 for n in nums if not db(("INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?) ON CONFLICT (phone_number) DO NOTHING" if use_pg else "INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)"), (srv, cntry, rate, n), fetch="rowcount", commit=True))
+    p = lines[0].split(maxsplit=3)
+    srv, cntry = p[1].capitalize(), p[2].capitalize()
+    rate = float(re.sub(r"[^\d.]", "", p[3])) if len(p) >= 4 and re.sub(r"[^\d.]", "", p[3]) else DEFAULT_OTP_RATE
+    
+    # Properly extract all numbers separated by commas or newlines
+    raw_nums = []
+    for line in lines[1:]:
+        raw_nums.extend([n.strip() for n in line.split(",") if n.strip()])
+    
+    nums = [re.sub(r"\D", "", n) for n in raw_nums if re.sub(r"\D", "", n)]
+    
+    added = 0
+    for n in nums:
+        try:
+            if use_pg:
+                res = db("INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?) ON CONFLICT (phone_number) DO NOTHING", (srv, cntry, rate, n), commit=True)
+            else:
+                res = db("INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)", (srv, cntry, rate, n), commit=True)
+            added += 1
+        except Exception:
+            pass
+
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
     
     bot_info = await bot.get_me()
     stock_text = f"🎉 <b>New Stock Added!</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n📱 <b>Quantity:</b> <code>{added}</code> numbers\n💵 <b>Rate:</b> <code>${rate:.4f}</code> per OTP\n\n👉 <i>Press 'Get Number' from the Bot to request numbers!</i>"
+    
     if TELEGRAM_GROUP_ID:
-        try: await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}", style="success")]]), parse_mode="HTML")
-        except Exception: pass
+        try: 
+            await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}", style="success")]]), parse_mode="HTML")
+        except Exception: 
+            pass
+            
     for u in (db("SELECT user_id FROM balances", fetch="all") or []):
         try:
             await bot.send_message(u[0], stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}", style="success")]]), parse_mode="HTML")
             await asyncio.sleep(0.04)
-        except Exception: pass
+        except Exception: 
+            pass
 
 @dp.message(F.text.startswith("/broadcast"))
 async def handle_broadcast(m: Message):
