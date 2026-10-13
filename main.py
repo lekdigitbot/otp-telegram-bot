@@ -16,6 +16,8 @@ BOT_TOKEN, THIRDWAVE_API_KEY, IPRN_API_KEY = os.getenv("BOT_TOKEN"), os.getenv("
 DATABASE_URL, RENDER_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip(), os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
 ADMIN_ID, TELEGRAM_GROUP_ID, DISCUSSION_GROUP_ID, BACKUP_GROUP_ID = int(os.getenv("ADMIN_ID", 0) or 0), int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0), int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0), int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
+FRIEND_GROUP_ID = int(os.getenv("FRIEND_GROUP_ID", 0) or 0)
+
 OTP_GROUP_LINK, DISCUSSION_GROUP_LINK, BACKUP_GROUP_LINK, SUPPORT_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone"), os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup"), os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup"), os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
 THIRDWAVE_BASE_URL, IPRN_BASE_URL = "https://clients.thirdwave.im/api/v1", "https://api.iprn.pro/api/stock/public"
@@ -103,7 +105,6 @@ async def add_num(m: Message):
     srv, cntry = p[1].capitalize(), p[2].capitalize()
     rate = float(re.sub(r"[^\d.]", "", p[3])) if len(p) >= 4 and re.sub(r"[^\d.]", "", p[3]) else DEFAULT_OTP_RATE
     
-    # Properly extract all numbers separated by commas or newlines
     raw_nums = []
     for line in lines[1:]:
         raw_nums.extend([n.strip() for n in line.split(",") if n.strip()])
@@ -364,7 +365,7 @@ async def status_h(m: Message):
     medals = ["🥇", "🥈", "🥉"]
     await m.answer(f"📊 <b>STATUS & LEADERBOARD</b>\n\n📱 <b>Total (7d):</b> <code>{u_cnt}</code>\n\n🗓️ <b>Daily:</b>\n" + "".join([f"📅 {d}: <code>{c}</code>\n" for d, c in daily]) + "\n🏆 <b>Top Rank:</b>\n" + "".join([f"{medals[i]}: User <code>{u}</code> — <b>{c} OTPs</b>\n" for i, (u, c) in enumerate(top_3)]), parse_mode="HTML")
 
-async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
+async def process_incoming_otp(otp_identifier, phone, body, raw_otp="", srv="OTP", cntry="Service"):
     exists = await asyncio.to_thread(db, "SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), "one")
     if exists:
         return
@@ -383,7 +384,8 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     else:
         await asyncio.to_thread(db, "INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
 
-    srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
+    if row: srv, cntry, rate = row[1], row[2], row[3]
+    else: rate = DEFAULT_OTP_RATE
 
     grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK, style="primary"), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK, style="success")]])
     
@@ -421,6 +423,29 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
             await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
         except Exception as e:
             print(f"[USER MSG ERROR] {e}")
+
+@dp.message(F.chat.id == FRIEND_GROUP_ID)
+async def friend_group_listener(m: Message):
+    text = m.text or m.caption or ""
+    if not text: return
+    
+    country_m = re.search(r"Country:\s*([^\n]+)", text)
+    service_m = re.search(r"Service:\s*([^\n]+)", text)
+    phone_m = re.search(r"Number:\s*([+\d]+)", text)
+    otp_m = re.search(r"OTP:\s*(\d+)", text)
+    body_m = re.search(r"Full Message:\s*\n([\s\S]+)", text)
+    
+    cntry = country_m.group(1).strip() if country_m else "Nigeria"
+    cntry = re.sub(r"[^\w\s]", "", cntry).strip()
+    srv = service_m.group(1).strip() if service_m else "OTP"
+    phone = phone_m.group(1).strip() if phone_m else ""
+    otp_code = otp_m.group(1).strip() if otp_m else ""
+    body = body_m.group(1).strip() if body_m else text
+    
+    if phone and (otp_code or body):
+        unique_str = f"tg_group_{phone}_{body.strip()}"
+        mid = hashlib.md5(unique_str.encode()).hexdigest()
+        await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=otp_code, srv=srv, cntry=cntry)
 
 async def poll_traffic():
     while True:
