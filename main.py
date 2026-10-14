@@ -12,11 +12,23 @@ try:
 except ImportError:
     HAS_PSYCOPG2 = False
 
+try:
+    from telethon import TelegramClient, events
+    from telethon.sessions import StringSession
+    HAS_TELETHON = True
+except ImportError:
+    HAS_TELETHON = False
+
 BOT_TOKEN, THIRDWAVE_API_KEY, IPRN_API_KEY = os.getenv("BOT_TOKEN"), os.getenv("THIRDWAVE_API_KEY"), os.getenv("IPRN_API_KEY")
 DATABASE_URL, RENDER_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip(), os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
 ADMIN_ID, TELEGRAM_GROUP_ID, DISCUSSION_GROUP_ID, BACKUP_GROUP_ID = int(os.getenv("ADMIN_ID", 0) or 0), int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0), int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0), int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
 FRIEND_GROUP_ID = int(os.getenv("FRIEND_GROUP_ID", 0) or 0)
+
+# UserBot Credentials for reading your friend's group without bot limitations
+TG_API_ID = int(os.getenv("TG_API_ID", 0) or 0)
+TG_API_HASH = os.getenv("TG_API_HASH", "")
+TG_STRING_SESSION = os.getenv("TG_STRING_SESSION", "")
 
 OTP_GROUP_LINK, DISCUSSION_GROUP_LINK, BACKUP_GROUP_LINK, SUPPORT_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone"), os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup"), os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup"), os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
@@ -282,7 +294,6 @@ async def traffic_h(m: Message):
         return await m.answer("⚠ Session starting...", reply_markup=main_menu())
     
     combined_rows = []
-    
     if THIRDWAVE_API_KEY:
         try:
             async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=20&pageSize=20", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "x-api-key": THIRDWAVE_API_KEY, "Accept": "application/json"}) as r:
@@ -424,28 +435,40 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp="", srv="OTP
         except Exception as e:
             print(f"[USER MSG ERROR] {e}")
 
-@dp.message(F.chat.id == FRIEND_GROUP_ID)
-async def friend_group_listener(m: Message):
-    text = m.text or m.caption or ""
-    if not text: return
-    
-    country_m = re.search(r"Country:\s*([^\n]+)", text)
-    service_m = re.search(r"Service:\s*([^\n]+)", text)
-    phone_m = re.search(r"Number:\s*([+\d]+)", text)
-    otp_m = re.search(r"OTP:\s*(\d+)", text)
-    body_m = re.search(r"Full Message:\s*\n([\s\S]+)", text)
-    
-    cntry = country_m.group(1).strip() if country_m else "Nigeria"
-    cntry = re.sub(r"[^\w\s]", "", cntry).strip()
-    srv = service_m.group(1).strip() if service_m else "OTP"
-    phone = phone_m.group(1).strip() if phone_m else ""
-    otp_code = otp_m.group(1).strip() if otp_m else ""
-    body = body_m.group(1).strip() if body_m else text
-    
-    if phone and (otp_code or body):
-        unique_str = f"tg_group_{phone}_{body.strip()}"
-        mid = hashlib.md5(unique_str.encode()).hexdigest()
-        await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=otp_code, srv=srv, cntry=cntry)
+# --- TELETHON USERBOT LISTENER ---
+async def start_userbot():
+    if not HAS_TELETHON or not TG_API_ID or not TG_API_HASH or not TG_STRING_SESSION:
+        print("⚠️ Telethon UserBot not configured or missing credentials. Skipping UserBot listener.")
+        return
+
+    client = TelegramClient(StringSession(TG_STRING_SESSION), TG_API_ID, TG_API_HASH)
+
+    @client.on(events.NewMessage(chats=FRIEND_GROUP_ID))
+    async def handle_userbot_message(event):
+        text = event.raw_text or event.message.message or ""
+        if not text: return
+        
+        country_m = re.search(r"Country:\s*([^\n]+)", text)
+        service_m = re.search(r"Service:\s*([^\n]+)", text)
+        phone_m = re.search(r"Number:\s*([+\d]+)", text)
+        otp_m = re.search(r"OTP:\s*(\d+)", text)
+        body_m = re.search(r"Full Message:\s*\n([\s\S]+)", text)
+        
+        cntry = country_m.group(1).strip() if country_m else "Nigeria"
+        cntry = re.sub(r"[^\w\s]", "", cntry).strip()
+        srv = service_m.group(1).strip() if service_m else "OTP"
+        phone = phone_m.group(1).strip() if phone_m else ""
+        otp_code = otp_m.group(1).strip() if otp_m else ""
+        body = body_m.group(1).strip() if body_m else text
+        
+        if phone and (otp_code or body):
+            unique_str = f"userbot_group_{phone}_{body.strip()}"
+            mid = hashlib.md5(unique_str.encode()).hexdigest()
+            await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=otp_code, srv=srv, cntry=cntry)
+
+    await client.start()
+    print("🚀 Telethon UserBot started successfully and listening to friend's group!")
+    await client.run_until_disconnected()
 
 async def poll_traffic():
     while True:
@@ -488,9 +511,11 @@ async def poll_traffic():
 async def lifespan(app: FastAPI):
     global http_session; http_session = aiohttp.ClientSession()
     await bot.set_webhook(f"{RENDER_URL}/telegram-webhook", drop_pending_updates=True)
-    task = asyncio.create_task(poll_traffic())
+    task_traffic = asyncio.create_task(poll_traffic())
+    task_userbot = asyncio.create_task(start_userbot())
     yield
-    task.cancel()
+    task_traffic.cancel()
+    task_userbot.cancel()
     if http_session and not http_session.closed: await http_session.close()
     await bot.delete_webhook(); await bot.session.close()
 
