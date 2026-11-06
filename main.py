@@ -30,7 +30,7 @@ DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigi
 BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
 SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
-THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
+THIRDWAVE_BASE_URL = "https://thirdwave.im/api/v1"
 IPRN_BASE_URL = "https://api.iprn.pro/api/stock/public"
 TEMPNUMBERS_BASE_URL = "https://tempnumbers.net/api"
 
