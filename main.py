@@ -12,16 +12,33 @@ try:
 except ImportError:
     HAS_PSYCOPG2 = False
 
-BOT_TOKEN, THIRDWAVE_API_KEY, IPRN_API_KEY, TEMPNUMBERS_API_KEY = os.getenv("BOT_TOKEN"), os.getenv("THIRDWAVE_API_KEY"), os.getenv("IPRN_API_KEY"), os.getenv("TEMPNUMBERS_API_KEY")
-DATABASE_URL, RENDER_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip(), os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
+IPRN_API_KEY = os.getenv("IPRN_API_KEY")
+TEMPNUMBERS_API_KEY = os.getenv("TEMPNUMBERS_API_KEY")
 
-ADMIN_ID, TELEGRAM_GROUP_ID, DISCUSSION_GROUP_ID, BACKUP_GROUP_ID = int(os.getenv("ADMIN_ID", 0) or 0), int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0), int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0), int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
-OTP_GROUP_LINK, DISCUSSION_GROUP_LINK, BACKUP_GROUP_LINK, SUPPORT_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone"), os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup"), os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup"), os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
+DATABASE_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip()
+RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
-THIRDWAVE_BASE_URL, IPRN_BASE_URL = "https://clients.thirdwave.im/api/v1", "https://api.iprn.pro/api/stock/public"
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0) or 0)
+TELEGRAM_GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0)
+DISCUSSION_GROUP_ID = int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0)
+BACKUP_GROUP_ID = int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
+
+OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone")
+DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup")
+BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
+SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
+
+THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
+IPRN_BASE_URL = "https://api.iprn.pro/api/stock/public"
+TEMPNUMBERS_BASE_URL = "https://tempnumbers.net/api"  # Base endpoint for tempnumbers panel
+
 DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS, ASSIGN_COUNT = 0.003, 0.3, 0.01, 3
 
-if not BOT_TOKEN: raise ValueError("❌ Missing BOT_TOKEN!")
+if not BOT_TOKEN: 
+    raise ValueError("❌ Missing BOT_TOKEN!")
+
 bot, dp = Bot(token=BOT_TOKEN), Dispatcher(storage=MemoryStorage())
 http_session, DB_FILE = None, "/tmp/bot_data.db"
 
@@ -48,27 +65,32 @@ init_queries = [
     f"CREATE TABLE IF NOT EXISTS referrals (user_id {'BIGINT' if use_pg else 'INTEGER'} PRIMARY KEY, referred_by {'BIGINT' if use_pg else 'INTEGER'}, otp_count INT DEFAULT 0, rewarded INT DEFAULT 0)",
     f"CREATE TABLE IF NOT EXISTS otp_logs (id {'SERIAL' if use_pg else 'INTEGER PRIMARY KEY AUTOINCREMENT'} PRIMARY KEY, otp_identifier TEXT UNIQUE, user_id {'BIGINT' if use_pg else 'INTEGER'}, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
 ]
-for q in init_queries: db(q, commit=True)
-try: db("ALTER TABLE otp_logs ADD COLUMN IF NOT EXISTS otp_identifier TEXT UNIQUE;" if use_pg else "ALTER TABLE otp_logs ADD COLUMN otp_identifier TEXT UNIQUE;", commit=True)
-except Exception: pass
+
+for q in init_queries: 
+    db(q, commit=True)
+
+try: 
+    db("ALTER TABLE otp_logs ADD COLUMN IF NOT EXISTS otp_identifier TEXT UNIQUE;" if use_pg else "ALTER TABLE otp_logs ADD COLUMN otp_identifier TEXT UNIQUE;", commit=True)
+except Exception: 
+    pass
 
 mask_phone = lambda p: (clean := re.sub(r"\D", "", str(p).strip())) and (clean[:2]+"****"+clean[-2:] if len(clean)<=7 else clean[:5]+"****"+clean[-4:])
 extract_otp = lambda b, f="": str(f).strip() if (f and str(f) != "None") else ((m := re.search(r'\b\d{4,8}\b', str(b))) and m.group(0) or "No Code")
 
 def main_menu(): 
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📱 GET NUMBER", style="primary"), KeyboardButton(text="🔴 LIVE TRAFFIC", style="primary")], 
-        [KeyboardButton(text="💸 WITHDRAW", style="primary"), KeyboardButton(text="💰 BALANCE", style="primary")], 
-        [KeyboardButton(text="♾️ REFER AND EARN", style="primary"), KeyboardButton(text="💀 SUPPORT", style="primary")], 
-        [KeyboardButton(text="📊 STATUS", style="primary")]
+        [KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")], 
+        [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")], 
+        [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")], 
+        [KeyboardButton(text="📊 STATUS")]
     ], resize_keyboard=True, is_persistent=True)
 
 def force_join_kb(): 
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK, style="primary")], 
-        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK, style="primary")], 
-        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK, style="primary")], 
-        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership", style="success")]
+        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK)], 
+        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK)], 
+        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK)], 
+        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership")]
     ])
 
 async def check_user_joined(uid):
@@ -83,14 +105,14 @@ async def check_user_joined(uid):
 def build_services_keyboard():
     rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= ?", (ASSIGN_COUNT,), fetch="all") or []
     if not rows: return None, "⚠️ <b>Out of stock!</b>"
-    btns = [InlineKeyboardButton(text=f"🔹 {s.upper()}", callback_data=f"s_{s}", style="success") for s, _ in rows]
-    return InlineKeyboardMarkup(inline_keyboard=[btns[i:i+2] for i in range(0, len(btns), 2)] + [[InlineKeyboardButton(text="🔙 Back to Menu", callback_data="cb_close_menu", style="danger")]]), "📌 <b>Select a Service:</b>"
+    btns = [InlineKeyboardButton(text=f"🔹 {s.upper()}", callback_data=f"s_{s}") for s, _ in rows]
+    return InlineKeyboardMarkup(inline_keyboard=[btns[i:i+2] for i in range(0, len(btns), 2)] + [[InlineKeyboardButton(text="🔙 Back to Menu", callback_data="cb_close_menu")]]), "📌 <b>Select a Service:</b>"
 
 def build_countries_keyboard(srv):
     rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= ?", (srv, ASSIGN_COUNT), fetch="all") or []
     if not rows: return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
-    kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
-    return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
+    kb = [[InlineKeyboardButton(text=f"🌍 {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}")] for c, r, _ in rows]
+    return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
 @dp.message(F.text.startswith("/addnumber"))
 async def add_num(m: Message):
@@ -108,17 +130,16 @@ async def add_num(m: Message):
             else: db("INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)", (srv, cntry, rate, n), commit=True)
             added += 1
         except Exception: pass
-
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
     bot_info = await bot.get_me()
     stock_text = f"🎉 <b>New Stock Added!</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n📱 <b>Quantity:</b> <code>{added}</code> numbers\n💵 <b>Rate:</b> <code>${rate:.4f}</code> per OTP\n\n👉 <i>Press 'Get Number' from the Bot to request numbers!</i>"
     
     if TELEGRAM_GROUP_ID:
-        try: await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}", style="success")]]), parse_mode="HTML")
+        try: await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}")]]), parse_mode="HTML")
         except Exception: pass
     for u in (db("SELECT user_id FROM balances", fetch="all") or []):
         try:
-            await bot.send_message(u[0], stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}", style="success")]]), parse_mode="HTML")
+            await bot.send_message(u[0], stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}")]]), parse_mode="HTML")
             await asyncio.sleep(0.04)
         except Exception: pass
 
@@ -198,12 +219,11 @@ async def num_assign(c: CallbackQuery):
         db("DELETE FROM stock WHERE phone_number = ?", (n,), commit=True)
         q = "INSERT INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?) ON CONFLICT (phone_number) DO UPDATE SET user_id=EXCLUDED.user_id, service=EXCLUDED.service, country=EXCLUDED.country, rate=EXCLUDED.rate" if use_pg else "INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)"
         db(q, (n, c.from_user.id, srv, cntry, rate), commit=True)
-
     rem_count = (db("SELECT COUNT(*) FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="one") or [0])[0]
-    kb = [[InlineKeyboardButton(text=f"➕ +{n}", copy_text={"text": f"+{n}"}, style="success")] for n in nums] + [
-        [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}", style="primary"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}", style="primary")],
-        [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK, style="success")],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list", style="danger")]
+    kb = [[InlineKeyboardButton(text=f"➕ +{n}", copy_text={"text": f"+{n}"})] for n in nums] + [
+        [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}")],
+        [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK)],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list")]
     ]
     await c.message.edit_text(f"🇳🇬 <b>{cntry} Number Assigned:</b>\n\n⏳ Waiting for OTP...\nPer OTP Rate: <b>${rate:.3f}</b>\n📦 <i>Remaining Stock:</i> <code>{rem_count}</code>\n", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
@@ -236,7 +256,7 @@ async def start_h(m: Message):
     await m.answer(f"👋 Welcome <b>{m.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!", reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(F.text == "💀 SUPPORT")
-async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK, style="primary")]]))
+async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK)]]))
 
 @dp.message(F.text == "📱 GET NUMBER")
 async def srv_h(m: Message):
@@ -281,14 +301,14 @@ async def traffic_h(m: Message):
                             combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
 
-if TEMPNUMBERS_API_KEY:
+   if TEMPNUMBERS_API_KEY:
         try:
-            async with http_session.get(f"https://tempnumbers.net/api/v1/traffic?page=1&limit=20", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "x-api-key": TEMPNUMBERS_API_KEY, "Accept": "application/json"}) as r:
+            async with http_session.get(f"{TEMPNUMBERS_BASE_URL}/edr?page=1&per_page=20", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
                 if r.status == 200:
                     res = await r.json()
-                    items = res.get("rows", []) if isinstance(res, dict) else (res.get("data", []) if isinstance(res, dict) else (res if isinstance(res, list) else []))
+                    items = res.get("data", []) if isinstance(res, dict) else (res if isinstance(res, list) else [])
                     for i in items:
-                        phone = str(i.get("number") or i.get("destinationNumber") or i.get("phone") or "")
+                        phone = str(i.get("number") or i.get("b_number") or i.get("phone") or "")
                         msg = str(i.get("sms") or i.get("message") or i.get("text") or "")
                         otp = extract_otp(msg)
                         if phone and msg:
@@ -332,7 +352,7 @@ async def wd_amt(m: Message, state: FSMContext):
     except ValueError: return await m.answer("⚠️ Enter valid number:")
     if amt < MIN_WITHDRAWAL or amt > bal: return await m.answer(f"⚠️ Invalid amount! Max: <code>${bal:.2f}</code>", parse_mode="HTML")
     dtls = (await state.get_data()).get("details"); await state.clear(); await m.answer("✅ Request Submitted!")
-    try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}", style="danger")]]))
+    try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}")]]))
     except Exception: pass
 
 @dp.message(F.text == "📊 STATUS")
@@ -353,24 +373,18 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     exists = await asyncio.to_thread(db, "SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), "one")
     if exists:
         return
-
     otp_code = extract_otp(body, raw_otp)
     clean_num = re.sub(r"\D", "", str(phone))
-
     if not clean_num:
         return
-
     row = await asyncio.to_thread(db, "SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), "one")
     uid = row[0] if row else None
-
     if use_pg:
         await asyncio.to_thread(db, "INSERT INTO otp_logs (otp_identifier, user_id) VALUES (?, ?) ON CONFLICT (otp_identifier) DO NOTHING", (otp_identifier, uid), commit=True)
     else:
         await asyncio.to_thread(db, "INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
-
     srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
-
-    grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK, style="primary"), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK, style="success")]])
+    grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
     
     if TELEGRAM_GROUP_ID:
         try:
@@ -401,7 +415,6 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
                 except Exception: pass
             else:
                 await asyncio.to_thread(db, "UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
-
         try:
             await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
         except Exception as e:
@@ -411,6 +424,7 @@ async def poll_traffic():
     while True:
         try:
             if http_session and not http_session.closed:
+                # 1. Thirdwave
                 if THIRDWAVE_API_KEY:
                     try:
                         async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=50&pageSize=50", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "x-api-key": THIRDWAVE_API_KEY, "Accept": "application/json"}) as r:
@@ -427,6 +441,7 @@ async def poll_traffic():
                                     await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=raw_otp)
                     except Exception as tw_e: print(f"[THIRDWAVE ERROR] {tw_e}")
 
+                # 2. IPRN.pro
                 if IPRN_API_KEY:
                     try:
                         async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=50", headers={"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
@@ -442,17 +457,18 @@ async def poll_traffic():
                                     await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
                     except Exception as iprn_e: print(f"[IPRN ERROR] {iprn_e}")
 
+                # 3. Tempnumbers (`tempnumbers.net`)
                 if TEMPNUMBERS_API_KEY:
                     try:
-                        async with http_session.get(f"https://tempnumbers.net/api/v1/traffic?page=1&limit=50", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "x-api-key": TEMPNUMBERS_API_KEY, "Accept": "application/json"}) as r:
+                        async with http_session.get(f"{TEMPNUMBERS_BASE_URL}/edr?page=1&per_page=50", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
                             if r.status == 200:
                                 res_data = await r.json()
-                                items = res_data.get("rows", []) if isinstance(res_data, dict) else (res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else []))
+                                items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else [])
                                 for item in items:
-                                    phone = str(item.get("number") or item.get("destinationNumber") or item.get("phone") or "")
+                                    phone = str(item.get("number") or item.get("b_number") or item.get("phone") or "")
                                     body = str(item.get("sms") or item.get("message") or item.get("text") or "")
                                     if not phone or not body: continue
-                                    unique_str = f"tempnumbers_{phone}_{body.strip()}"
+                                    unique_str = f"tn_{phone}_{body.strip()}"
                                     mid = hashlib.md5(unique_str.encode()).hexdigest()
                                     await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
                     except Exception as tn_e: print(f"[TEMPNUMBERS ERROR] {tn_e}")
@@ -478,19 +494,6 @@ async def process_telegram_update(request: Request):
     data = await request.json()
     await dp.feed_update(bot, Update.model_validate(data, context={"bot": bot}))
     return {"status": "ok"}
-
-@app.get("/tempnumbers-webhook")
-async def tempnumbers_webhook(request: Request):
-    params = request.query_params
-    phone = params.get("number") or params.get("destinationNumber") or params.get("phone") or ""
-    body = params.get("sms") or params.get("message") or params.get("text") or ""
-    sms_id = params.get("sms_id") or params.get("id") or ""
-    if phone and body:
-        unique_str = f"tempnumbers_wh_{sms_id or phone}_{body.strip()}"
-        mid = hashlib.md5(unique_str.encode()).hexdigest()
-        await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
-        return {"status": "success"}
-    return {"status": "ignored"}
 
 @app.get("/")
 async def health_check(): return {"status": "bot is running"}
