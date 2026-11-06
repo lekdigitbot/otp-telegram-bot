@@ -32,7 +32,7 @@ SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
 THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 IPRN_BASE_URL = "https://api.iprn.pro/api/stock/public"
-TEMPNUMBERS_BASE_URL = "https://tempnumbers.net/api"  # Base endpoint for tempnumbers panel
+TEMPNUMBERS_BASE_URL = "https://tempnumbers.net/api"
 
 DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS, ASSIGN_COUNT = 0.003, 0.3, 0.01, 3
 
@@ -301,7 +301,7 @@ async def traffic_h(m: Message):
                             combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
 
-   if TEMPNUMBERS_API_KEY:
+    if TEMPNUMBERS_API_KEY:
         try:
             async with http_session.get(f"{TEMPNUMBERS_BASE_URL}/edr?page=1&per_page=20", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
                 if r.status == 200:
