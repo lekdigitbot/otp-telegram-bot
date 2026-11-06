@@ -12,7 +12,7 @@ try:
 except ImportError:
     HAS_PSYCOPG2 = False
 
-BOT_TOKEN, THIRDWAVE_API_KEY, IPRN_API_KEY = os.getenv("BOT_TOKEN"), os.getenv("THIRDWAVE_API_KEY"), os.getenv("IPRN_API_KEY")
+BOT_TOKEN, THIRDWAVE_API_KEY, IPRN_API_KEY, TEMPNUMBERS_API_KEY = os.getenv("BOT_TOKEN"), os.getenv("THIRDWAVE_API_KEY"), os.getenv("IPRN_API_KEY"), os.getenv("TEMPNUMBERS_API_KEY")
 DATABASE_URL, RENDER_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip(), os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
 ADMIN_ID, TELEGRAM_GROUP_ID, DISCUSSION_GROUP_ID, BACKUP_GROUP_ID = int(os.getenv("ADMIN_ID", 0) or 0), int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0), int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0), int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
@@ -281,6 +281,20 @@ async def traffic_h(m: Message):
                             combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
 
+if TEMPNUMBERS_API_KEY:
+        try:
+            async with http_session.get(f"https://tempnumbers.net/api/v1/traffic?page=1&limit=20", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "x-api-key": TEMPNUMBERS_API_KEY, "Accept": "application/json"}) as r:
+                if r.status == 200:
+                    res = await r.json()
+                    items = res.get("rows", []) if isinstance(res, dict) else (res.get("data", []) if isinstance(res, dict) else (res if isinstance(res, list) else []))
+                    for i in items:
+                        phone = str(i.get("number") or i.get("destinationNumber") or i.get("phone") or "")
+                        msg = str(i.get("sms") or i.get("message") or i.get("text") or "")
+                        otp = extract_otp(msg)
+                        if phone and msg:
+                            combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
+        except Exception: pass
+
     txt = "🔴 <b>Recent Live Traffic:</b>\n\n" + "".join([
         f"📱 <b>Num:</b> <code>{html.escape(mask_phone(i['phone']))}</code>\n"
         f"🔑 <b>OTP:</b> <code>{html.escape(i['otp'])}</code>\n"
@@ -427,6 +441,22 @@ async def poll_traffic():
                                     mid = hashlib.md5(unique_str.encode()).hexdigest()
                                     await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
                     except Exception as iprn_e: print(f"[IPRN ERROR] {iprn_e}")
+
+                if TEMPNUMBERS_API_KEY:
+                    try:
+                        async with http_session.get(f"https://tempnumbers.net/api/v1/traffic?page=1&limit=50", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "x-api-key": TEMPNUMBERS_API_KEY, "Accept": "application/json"}) as r:
+                            if r.status == 200:
+                                res_data = await r.json()
+                                items = res_data.get("rows", []) if isinstance(res_data, dict) else (res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else []))
+                                for item in items:
+                                    phone = str(item.get("number") or item.get("destinationNumber") or item.get("phone") or "")
+                                    body = str(item.get("sms") or item.get("message") or item.get("text") or "")
+                                    if not phone or not body: continue
+                                    unique_str = f"tempnumbers_{phone}_{body.strip()}"
+                                    mid = hashlib.md5(unique_str.encode()).hexdigest()
+                                    await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
+                    except Exception as tn_e: print(f"[TEMPNUMBERS ERROR] {tn_e}")
+
         except Exception as e: print(f"[WORKER ERROR] {e}")
         await asyncio.sleep(1.0)
 
@@ -448,6 +478,19 @@ async def process_telegram_update(request: Request):
     data = await request.json()
     await dp.feed_update(bot, Update.model_validate(data, context={"bot": bot}))
     return {"status": "ok"}
+
+@app.get("/tempnumbers-webhook")
+async def tempnumbers_webhook(request: Request):
+    params = request.query_params
+    phone = params.get("number") or params.get("destinationNumber") or params.get("phone") or ""
+    body = params.get("sms") or params.get("message") or params.get("text") or ""
+    sms_id = params.get("sms_id") or params.get("id") or ""
+    if phone and body:
+        unique_str = f"tempnumbers_wh_{sms_id or phone}_{body.strip()}"
+        mid = hashlib.md5(unique_str.encode()).hexdigest()
+        await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
+        return {"status": "success"}
+    return {"status": "ignored"}
 
 @app.get("/")
 async def health_check(): return {"status": "bot is running"}
