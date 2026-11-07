@@ -30,9 +30,9 @@ DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigi
 BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
 SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
-THIRDWAVE_BASE_URL = "https://thirdwave.im/api/v1"
+THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
 IPRN_BASE_URL = "https://api.iprn.pro/api/stock/public"
-TEMPNUMBERS_BASE_URL = "https://tempnumbers.net/api"
+TEMPNUMBERS_BASE_URL = "https://tempnumbers.net/api/v1"
 
 DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS, ASSIGN_COUNT = 0.003, 0.3, 0.01, 3
 
@@ -79,18 +79,18 @@ extract_otp = lambda b, f="": str(f).strip() if (f and str(f) != "None") else ((
 
 def main_menu(): 
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")], 
-        [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")], 
-        [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")], 
-        [KeyboardButton(text="📊 STATUS")]
+        [KeyboardButton(text="📱 GET NUMBER", style="primary"), KeyboardButton(text="🔴 LIVE TRAFFIC", style="primary")], 
+        [KeyboardButton(text="💸 WITHDRAW", style="primary"), KeyboardButton(text="💰 BALANCE", style="primary")], 
+        [KeyboardButton(text="♾️ REFER AND EARN", style="primary"), KeyboardButton(text="💀 SUPPORT", style="primary")], 
+        [KeyboardButton(text="📊 STATUS", style="primary")]
     ], resize_keyboard=True, is_persistent=True)
 
 def force_join_kb(): 
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK)], 
-        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK)], 
-        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK)], 
-        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership")]
+        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK, style="primary")], 
+        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK, style="primary")], 
+        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK, style="primary")], 
+        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership", style="success")]
     ])
 
 async def check_user_joined(uid):
@@ -105,14 +105,14 @@ async def check_user_joined(uid):
 def build_services_keyboard():
     rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= ?", (ASSIGN_COUNT,), fetch="all") or []
     if not rows: return None, "⚠️ <b>Out of stock!</b>"
-    btns = [InlineKeyboardButton(text=f"🔹 {s.upper()}", callback_data=f"s_{s}") for s, _ in rows]
-    return InlineKeyboardMarkup(inline_keyboard=[btns[i:i+2] for i in range(0, len(btns), 2)] + [[InlineKeyboardButton(text="🔙 Back to Menu", callback_data="cb_close_menu")]]), "📌 <b>Select a Service:</b>"
+    btns = [InlineKeyboardButton(text=f"🔹 {s.upper()}", callback_data=f"s_{s}", style="success") for s, _ in rows]
+    return InlineKeyboardMarkup(inline_keyboard=[btns[i:i+2] for i in range(0, len(btns), 2)] + [[InlineKeyboardButton(text="🔙 Back to Menu", callback_data="cb_close_menu", style="danger")]]), "📌 <b>Select a Service:</b>"
 
 def build_countries_keyboard(srv):
     rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= ?", (srv, ASSIGN_COUNT), fetch="all") or []
     if not rows: return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
-    kb = [[InlineKeyboardButton(text=f"🌍 {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}")] for c, r, _ in rows]
-    return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
+    kb = [[InlineKeyboardButton(text=f"🌍 {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
+    return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
 @dp.message(F.text.startswith("/addnumber"))
 async def add_num(m: Message):
@@ -135,11 +135,11 @@ async def add_num(m: Message):
     stock_text = f"🎉 <b>New Stock Added!</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n📱 <b>Quantity:</b> <code>{added}</code> numbers\n💵 <b>Rate:</b> <code>${rate:.4f}</code> per OTP\n\n👉 <i>Press 'Get Number' from the Bot to request numbers!</i>"
     
     if TELEGRAM_GROUP_ID:
-        try: await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}")]]), parse_mode="HTML")
+        try: await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}", style="success")]]), parse_mode="HTML")
         except Exception: pass
     for u in (db("SELECT user_id FROM balances", fetch="all") or []):
         try:
-            await bot.send_message(u[0], stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}")]]), parse_mode="HTML")
+            await bot.send_message(u[0], stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}", style="success")]]), parse_mode="HTML")
             await asyncio.sleep(0.04)
         except Exception: pass
 
@@ -220,10 +220,10 @@ async def num_assign(c: CallbackQuery):
         q = "INSERT INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?) ON CONFLICT (phone_number) DO UPDATE SET user_id=EXCLUDED.user_id, service=EXCLUDED.service, country=EXCLUDED.country, rate=EXCLUDED.rate" if use_pg else "INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)"
         db(q, (n, c.from_user.id, srv, cntry, rate), commit=True)
     rem_count = (db("SELECT COUNT(*) FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="one") or [0])[0]
-    kb = [[InlineKeyboardButton(text=f"➕ +{n}", copy_text={"text": f"+{n}"})] for n in nums] + [
-        [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}")],
-        [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK)],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list")]
+    kb = [[InlineKeyboardButton(text=f"➕ +{n}", copy_text={"text": f"+{n}"}, style="success")] for n in nums] + [
+        [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}", style="primary"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}", style="primary")],
+        [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK, style="success")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list", style="danger")]
     ]
     await c.message.edit_text(f"🇳🇬 <b>{cntry} Number Assigned:</b>\n\n⏳ Waiting for OTP...\nPer OTP Rate: <b>${rate:.3f}</b>\n📦 <i>Remaining Stock:</i> <code>{rem_count}</code>\n", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
@@ -256,7 +256,7 @@ async def start_h(m: Message):
     await m.answer(f"👋 Welcome <b>{m.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!", reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(F.text == "💀 SUPPORT")
-async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK)]]))
+async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK, style="primary")]]))
 
 @dp.message(F.text == "📱 GET NUMBER")
 async def srv_h(m: Message):
@@ -352,7 +352,7 @@ async def wd_amt(m: Message, state: FSMContext):
     except ValueError: return await m.answer("⚠️ Enter valid number:")
     if amt < MIN_WITHDRAWAL or amt > bal: return await m.answer(f"⚠️ Invalid amount! Max: <code>${bal:.2f}</code>", parse_mode="HTML")
     dtls = (await state.get_data()).get("details"); await state.clear(); await m.answer("✅ Request Submitted!")
-    try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}")]]))
+    try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}", style="danger")]]))
     except Exception: pass
 
 @dp.message(F.text == "📊 STATUS")
@@ -384,7 +384,7 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     else:
         await asyncio.to_thread(db, "INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
     srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
-    grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
+    grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK, style="primary"), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK, style="success")]])
     
     if TELEGRAM_GROUP_ID:
         try:
@@ -459,34 +459,26 @@ async def poll_traffic():
 
                 # 3. Tempnumbers (`tempnumbers.net`)
                 if TEMPNUMBERS_API_KEY:
-                    for header_variant in [
-                        {"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}"},
-                        {"Authorization": TEMPNUMBERS_API_KEY},
-                        {"x-api-key": TEMPNUMBERS_API_KEY}
-                    ]:
-                        try:
-                            headers = {**header_variant, "Content-Type": "application/json", "Accept": "application/json"}
-                            async with http_session.get(f"{TEMPNUMBERS_BASE_URL}/edr?page=1&per_page=50", headers=headers) as r:
-                                if r.status == 200:
-                                    res_data = await r.json()
-                                    items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data.get("rows", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else []))
-                                    for item in items:
-                                        phone = str(item.get("number") or item.get("b_number") or item.get("phone") or "")
-                                        body = str(item.get("sms") or item.get("message") or item.get("text") or "")
-                                        if not phone or not body: continue
-                                        unique_str = f"tn_{phone}_{body.strip()}"
-                                        mid = hashlib.md5(unique_str.encode()).hexdigest()
-                                        await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
-                                    break # Exit header loop once successful
-                                else:
-                                    resp_text = await r.text()
-                                    print(f"[TEMPNUMBERS HTTP {r.status} with header {header_variant}] {resp_text[:100]}")
-                        except Exception as tn_e: 
-                            print(f"[TEMPNUMBERS ERROR] {tn_e}")
+                    try:
+                        async with http_session.get(f"{TEMPNUMBERS_BASE_URL}/edr?page=1&per_page=50", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
+                            if r.status == 200:
+                                res_data = await r.json()
+                                items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else [])
+                                for item in items:
+                                    phone = str(item.get("number") or item.get("b_number") or item.get("phone") or "")
+                                    body = str(item.get("sms") or item.get("message") or item.get("text") or "")
+                                    if not phone or not body: continue
+                                    unique_str = f"tn_{phone}_{body.strip()}"
+                                    mid = hashlib.md5(unique_str.encode()).hexdigest()
+                                    await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
+                            else:
+                                resp_text = await r.text()
+                                print(f"[TEMPNUMBERS HTTP {r.status}] {resp_text[:100]}")
+                    except Exception as tn_e: 
+                        print(f"[TEMPNUMBERS ERROR] {tn_e}")
 
         except Exception as e: print(f"[WORKER ERROR] {e}")
-        await asyncio.sleep(5.0)
-
+        await asyncio.sleep(1.0)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
