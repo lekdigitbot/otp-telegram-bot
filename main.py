@@ -12,33 +12,16 @@ try:
 except ImportError:
     HAS_PSYCOPG2 = False
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-THIRDWAVE_API_KEY = os.getenv("THIRDWAVE_API_KEY")
-IPRN_API_KEY = os.getenv("IPRN_API_KEY")
-TEMPNUMBERS_API_KEY = os.getenv("TEMPNUMBERS_API_KEY")
+BOT_TOKEN, THIRDWAVE_API_KEY, IPRN_API_KEY = os.getenv("BOT_TOKEN"), os.getenv("THIRDWAVE_API_KEY"), os.getenv("IPRN_API_KEY")
+DATABASE_URL, RENDER_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip(), os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip()
-RENDER_URL = os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
+ADMIN_ID, TELEGRAM_GROUP_ID, DISCUSSION_GROUP_ID, BACKUP_GROUP_ID = int(os.getenv("ADMIN_ID", 0) or 0), int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0), int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0), int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
+OTP_GROUP_LINK, DISCUSSION_GROUP_LINK, BACKUP_GROUP_LINK, SUPPORT_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone"), os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup"), os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup"), os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0) or 0)
-TELEGRAM_GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0)
-DISCUSSION_GROUP_ID = int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0)
-BACKUP_GROUP_ID = int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
-
-OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone")
-DISCUSSION_GROUP_LINK = os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup")
-BACKUP_GROUP_LINK = os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup")
-SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
-
-THIRDWAVE_BASE_URL = "https://clients.thirdwave.im/api/v1"
-IPRN_BASE_URL = "https://api.iprn.pro/api/stock/public"
-TEMPNUMBERS_BASE_URL = "https://tempnumbers.net/api/v1"
-
+THIRDWAVE_BASE_URL, IPRN_BASE_URL = "https://clients.thirdwave.im/api/v1", "https://api.iprn.pro/api/stock/public"
 DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS, ASSIGN_COUNT = 0.003, 0.3, 0.01, 3
 
-if not BOT_TOKEN: 
-    raise ValueError("❌ Missing BOT_TOKEN!")
-
+if not BOT_TOKEN: raise ValueError("❌ Missing BOT_TOKEN!")
 bot, dp = Bot(token=BOT_TOKEN), Dispatcher(storage=MemoryStorage())
 http_session, DB_FILE = None, "/tmp/bot_data.db"
 
@@ -65,14 +48,9 @@ init_queries = [
     f"CREATE TABLE IF NOT EXISTS referrals (user_id {'BIGINT' if use_pg else 'INTEGER'} PRIMARY KEY, referred_by {'BIGINT' if use_pg else 'INTEGER'}, otp_count INT DEFAULT 0, rewarded INT DEFAULT 0)",
     f"CREATE TABLE IF NOT EXISTS otp_logs (id {'SERIAL' if use_pg else 'INTEGER PRIMARY KEY AUTOINCREMENT'} PRIMARY KEY, otp_identifier TEXT UNIQUE, user_id {'BIGINT' if use_pg else 'INTEGER'}, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
 ]
-
-for q in init_queries: 
-    db(q, commit=True)
-
-try: 
-    db("ALTER TABLE otp_logs ADD COLUMN IF NOT EXISTS otp_identifier TEXT UNIQUE;" if use_pg else "ALTER TABLE otp_logs ADD COLUMN otp_identifier TEXT UNIQUE;", commit=True)
-except Exception: 
-    pass
+for q in init_queries: db(q, commit=True)
+try: db("ALTER TABLE otp_logs ADD COLUMN IF NOT EXISTS otp_identifier TEXT UNIQUE;" if use_pg else "ALTER TABLE otp_logs ADD COLUMN otp_identifier TEXT UNIQUE;", commit=True)
+except Exception: pass
 
 mask_phone = lambda p: (clean := re.sub(r"\D", "", str(p).strip())) and (clean[:2]+"****"+clean[-2:] if len(clean)<=7 else clean[:5]+"****"+clean[-4:])
 extract_otp = lambda b, f="": str(f).strip() if (f and str(f) != "None") else ((m := re.search(r'\b\d{4,8}\b', str(b))) and m.group(0) or "No Code")
@@ -111,7 +89,7 @@ def build_services_keyboard():
 def build_countries_keyboard(srv):
     rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= ?", (srv, ASSIGN_COUNT), fetch="all") or []
     if not rows: return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
-    kb = [[InlineKeyboardButton(text=f"🌍 {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
+    kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
     return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
 @dp.message(F.text.startswith("/addnumber"))
@@ -130,6 +108,7 @@ async def add_num(m: Message):
             else: db("INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)", (srv, cntry, rate, n), commit=True)
             added += 1
         except Exception: pass
+
     await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
     bot_info = await bot.get_me()
     stock_text = f"🎉 <b>New Stock Added!</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n📱 <b>Quantity:</b> <code>{added}</code> numbers\n💵 <b>Rate:</b> <code>${rate:.4f}</code> per OTP\n\n👉 <i>Press 'Get Number' from the Bot to request numbers!</i>"
@@ -219,6 +198,7 @@ async def num_assign(c: CallbackQuery):
         db("DELETE FROM stock WHERE phone_number = ?", (n,), commit=True)
         q = "INSERT INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?) ON CONFLICT (phone_number) DO UPDATE SET user_id=EXCLUDED.user_id, service=EXCLUDED.service, country=EXCLUDED.country, rate=EXCLUDED.rate" if use_pg else "INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)"
         db(q, (n, c.from_user.id, srv, cntry, rate), commit=True)
+
     rem_count = (db("SELECT COUNT(*) FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="one") or [0])[0]
     kb = [[InlineKeyboardButton(text=f"➕ +{n}", copy_text={"text": f"+{n}"}, style="success")] for n in nums] + [
         [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}", style="primary"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}", style="primary")],
@@ -286,7 +266,6 @@ async def traffic_h(m: Message):
                         if phone and msg:
                             combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
-
     if IPRN_API_KEY:
         try:
             async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=20", headers={"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
@@ -300,21 +279,6 @@ async def traffic_h(m: Message):
                         if phone and msg:
                             combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
-
-    if TEMPNUMBERS_API_KEY:
-        try:
-            async with http_session.get(f"{TEMPNUMBERS_BASE_URL}/edr?page=1&per_page=20", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
-                if r.status == 200:
-                    res = await r.json()
-                    items = res.get("data", []) if isinstance(res, dict) else (res if isinstance(res, list) else [])
-                    for i in items:
-                        phone = str(i.get("number") or i.get("b_number") or i.get("phone") or "")
-                        msg = str(i.get("sms") or i.get("message") or i.get("text") or "")
-                        otp = extract_otp(msg)
-                        if phone and msg:
-                            combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
-        except Exception: pass
-
     txt = "🔴 <b>Recent Live Traffic:</b>\n\n" + "".join([
         f"📱 <b>Num:</b> <code>{html.escape(mask_phone(i['phone']))}</code>\n"
         f"🔑 <b>OTP:</b> <code>{html.escape(i['otp'])}</code>\n"
@@ -322,39 +286,8 @@ async def traffic_h(m: Message):
         for i in combined_rows[:5]
     ])
     await m.answer(txt if combined_rows else "No traffic.", reply_markup=main_menu(), parse_mode="HTML")
-
-@dp.message(F.text == "💰 BALANCE")
-async def bal_h(m: Message):
-    row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one")
-    await m.answer(f"👤 <b>ID:</b> <code>{m.from_user.id}</code>\n💵 <b>Balance:</b> <code>${(row[0] if row else 0.0):.4f}</code>", parse_mode="HTML")
-
-@dp.message(F.text == "♾️ REFER AND EARN")
-async def ref_h(m: Message):
-    bot_info, row = await bot.get_me(), db("SELECT COUNT(*), SUM(rewarded) FROM referrals WHERE referred_by = ?", (m.from_user.id,), fetch="one")
-    tot, rwd = (row[0] if row and row[0] else 0), (row[1] if row and row[1] else 0)
-    await m.answer(f"♾️ <b>REFER AND EARN</b>\n\nEarn <b>${REFERRAL_BONUS:.2f}</b> per invite!\n📌 <b>Rule:</b> Friend must complete <b>3 OTP transactions</b>.\n\n🔗 <b>Referral Link:</b>\n<code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n\n👥 <b>Invited:</b> <code>{tot}</code>\n💵 <b>Rewarded:</b> <code>{rwd}</code>\n💰 <b>Earned:</b> <code>${rwd * REFERRAL_BONUS:.2f}</code>", parse_mode="HTML")
-
-@dp.message(F.text == "💸 WITHDRAW")
-async def wd_start(m: Message, state: FSMContext):
-    bal = (db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one") or [0.0])[0]
-    if bal < MIN_WITHDRAWAL: return await m.answer(f"❌ Balance too low! Bal: <code>${bal:.2f}</code> (Min: <code>${MIN_WITHDRAWAL:.2f}</code>)", parse_mode="HTML")
-    await state.set_state(WithdrawalState.waiting_for_details); await m.answer("💵 Send your payment details (Bank/Crypto):", parse_mode="HTML")
-
-@dp.message(WithdrawalState.waiting_for_details)
-async def wd_dtls(m: Message, state: FSMContext):
-    await state.update_data(details=m.text.strip()); await state.set_state(WithdrawalState.waiting_for_amount)
-    await m.answer(f"Enter Amount ($) (Min: <code>${MIN_WITHDRAWAL:.2f}</code>):", parse_mode="HTML")
-
-@dp.message(WithdrawalState.waiting_for_amount)
-async def wd_amt(m: Message, state: FSMContext):
-    bal = (db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one") or [0.0])[0]
-    try: amt = float(m.text.strip())
-    except ValueError: return await m.answer("⚠️ Enter valid number:")
-    if amt < MIN_WITHDRAWAL or amt > bal: return await m.answer(f"⚠️ Invalid amount! Max: <code>${bal:.2f}</code>", parse_mode="HTML")
-    dtls = (await state.get_data()).get("details"); await state.clear(); await m.answer("✅ Request Submitted!")
-    try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}", style="danger")]]))
+Seeinline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}", style="danger")]]))
     except Exception: pass
-
 @dp.message(F.text == "📊 STATUS")
 async def status_h(m: Message):
     uid = m.from_user.id
@@ -368,7 +301,6 @@ async def status_h(m: Message):
         top_3 = db("SELECT user_id, COUNT(*) as c FROM otp_logs WHERE strftime('%Y-%W', timestamp) = strftime('%Y-%W', 'now') GROUP BY user_id ORDER BY c DESC LIMIT 3", fetch="all") or []
     medals = ["🥇", "🥈", "🥉"]
     await m.answer(f"📊 <b>CURRENT WEEK STATUS & LEADERBOARD</b>\n\n📱 <b>Total (This Week):</b> <code>{u_cnt}</code>\n\n🗓️ <b>Daily:</b>\n" + "".join([f"📅 {d}: <code>{c}</code>\n" for d, c in daily]) + "\n🏆 <b>Top Rank:</b>\n" + "".join([f"{medals[i]}: User <code>{u}</code> — <b>{c} OTPs</b>\n" for i, (u, c) in enumerate(top_3)]), parse_mode="HTML")
-
 async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     exists = await asyncio.to_thread(db, "SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), "one")
     if exists:
@@ -396,7 +328,6 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
             )
         except Exception as e:
             print(f"[GROUP MSG ERROR] {e}")
-
     if row and uid:
         if use_pg:
             await asyncio.to_thread(db, "INSERT INTO balances (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + ?", (uid, rate, rate), commit=True)
@@ -419,12 +350,10 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
             await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
         except Exception as e:
             print(f"[USER MSG ERROR] {e}")
-
 async def poll_traffic():
     while True:
         try:
             if http_session and not http_session.closed:
-                # 1. Thirdwave
                 if THIRDWAVE_API_KEY:
                     try:
                         async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=50&pageSize=50", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "x-api-key": THIRDWAVE_API_KEY, "Accept": "application/json"}) as r:
@@ -440,8 +369,6 @@ async def poll_traffic():
                                     mid = hashlib.md5(unique_str.encode()).hexdigest()
                                     await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=raw_otp)
                     except Exception as tw_e: print(f"[THIRDWAVE ERROR] {tw_e}")
-
-                # 2. IPRN.pro
                 if IPRN_API_KEY:
                     try:
                         async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=50", headers={"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
@@ -456,30 +383,8 @@ async def poll_traffic():
                                     mid = hashlib.md5(unique_str.encode()).hexdigest()
                                     await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
                     except Exception as iprn_e: print(f"[IPRN ERROR] {iprn_e}")
-
-                # 3. Tempnumbers (`tempnumbers.net`)
-                if TEMPNUMBERS_API_KEY:
-                    try:
-                        async with http_session.get(f"{TEMPNUMBERS_BASE_URL}/edr?page=1&per_page=50", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
-                            if r.status == 200:
-                                res_data = await r.json()
-                                items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else [])
-                                for item in items:
-                                    phone = str(item.get("number") or item.get("b_number") or item.get("phone") or "")
-                                    body = str(item.get("sms") or item.get("message") or item.get("text") or "")
-                                    if not phone or not body: continue
-                                    unique_str = f"tn_{phone}_{body.strip()}"
-                                    mid = hashlib.md5(unique_str.encode()).hexdigest()
-                                    await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
-                            else:
-                                resp_text = await r.text()
-                                print(f"[TEMPNUMBERS HTTP {r.status}] {resp_text[:100]}")
-                    except Exception as tn_e: 
-                        print(f"[TEMPNUMBERS ERROR] {tn_e}")
-
         except Exception as e: print(f"[WORKER ERROR] {e}")
         await asyncio.sleep(1.0)
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_session; http_session = aiohttp.ClientSession()
@@ -489,15 +394,12 @@ async def lifespan(app: FastAPI):
     task.cancel()
     if http_session and not http_session.closed: await http_session.close()
     await bot.delete_webhook(); await bot.session.close()
-
 app = FastAPI(lifespan=lifespan)
-
 @app.post("/")
 @app.post("/telegram-webhook")
 async def process_telegram_update(request: Request):
     data = await request.json()
     await dp.feed_update(bot, Update.model_validate(data, context={"bot": bot}))
     return {"status": "ok"}
-
 @app.get("/")
 async def health_check(): return {"status": "bot is running"}
