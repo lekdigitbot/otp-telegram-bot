@@ -457,28 +457,36 @@ async def poll_traffic():
                                     await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
                     except Exception as iprn_e: print(f"[IPRN ERROR] {iprn_e}")
 
-                                # 3. Tempnumbers (`tempnumbers.net`)
+                # 3. Tempnumbers (`tempnumbers.net`)
                 if TEMPNUMBERS_API_KEY:
-                    for endpoint_path in ["/edr", "/traffic", "/sms"]:
+                    for header_variant in [
+                        {"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}"},
+                        {"Authorization": TEMPNUMBERS_API_KEY},
+                        {"x-api-key": TEMPNUMBERS_API_KEY}
+                    ]:
                         try:
-                            async with http_session.get(f"{TEMPNUMBERS_BASE_URL}{endpoint_path}?page=1&per_page=50", headers={"Authorization": f"Bearer {TEMPNUMBERS_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
+                            headers = {**header_variant, "Content-Type": "application/json", "Accept": "application/json"}
+                            async with http_session.get(f"{TEMPNUMBERS_BASE_URL}/edr?page=1&per_page=50", headers=headers) as r:
                                 if r.status == 200:
                                     res_data = await r.json()
                                     items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data.get("rows", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else []))
-                                    if items:
-                                        for item in items:
-                                            phone = str(item.get("number") or item.get("destinationNumber") or item.get("b_number") or item.get("phone") or "")
-                                            body = str(item.get("sms") or item.get("messageBody") or item.get("message") or item.get("text") or "")
-                                            if not phone or not body: continue
-                                            unique_str = f"tn_{phone}_{body.strip()}"
-                                            mid = hashlib.md5(unique_str.encode()).hexdigest()
-                                            await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
-                                        break # Stop trying other paths if one succeeds
+                                    for item in items:
+                                        phone = str(item.get("number") or item.get("b_number") or item.get("phone") or "")
+                                        body = str(item.get("sms") or item.get("message") or item.get("text") or "")
+                                        if not phone or not body: continue
+                                        unique_str = f"tn_{phone}_{body.strip()}"
+                                        mid = hashlib.md5(unique_str.encode()).hexdigest()
+                                        await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
+                                    break # Exit header loop once successful
+                                else:
+                                    resp_text = await r.text()
+                                    print(f"[TEMPNUMBERS HTTP {r.status} with header {header_variant}] {resp_text[:100]}")
                         except Exception as tn_e: 
-                            print(f"[TEMPNUMBERS ERROR on {endpoint_path}] {tn_e}")
+                            print(f"[TEMPNUMBERS ERROR] {tn_e}")
 
         except Exception as e: print(f"[WORKER ERROR] {e}")
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(5.0)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
