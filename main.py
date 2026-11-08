@@ -1,4 +1,4 @@
-import os, re, html, sqlite3, asyncio, aiohttp, hashlib
+import os, re, html, sqlite3, asyncio, aiohttp, hashlib, uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, F
@@ -57,18 +57,18 @@ extract_otp = lambda b, f="": str(f).strip() if (f and str(f) != "None") else ((
 
 def main_menu(): 
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📱 GET NUMBER", style="primary"), KeyboardButton(text="🔴 LIVE TRAFFIC", style="primary")], 
-        [KeyboardButton(text="💸 WITHDRAW", style="primary"), KeyboardButton(text="💰 BALANCE", style="primary")], 
-        [KeyboardButton(text="♾️ REFER AND EARN", style="primary"), KeyboardButton(text="💀 SUPPORT", style="primary")], 
-        [KeyboardButton(text="📊 STATUS", style="primary")]
+        [KeyboardButton(text="📱 GET NUMBER"), KeyboardButton(text="🔴 LIVE TRAFFIC")], 
+        [KeyboardButton(text="💸 WITHDRAW"), KeyboardButton(text="💰 BALANCE")], 
+        [KeyboardButton(text="♾️ REFER AND EARN"), KeyboardButton(text="💀 SUPPORT")], 
+        [KeyboardButton(text="📊 STATUS")]
     ], resize_keyboard=True, is_persistent=True)
 
 def force_join_kb(): 
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK, style="primary")], 
-        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK, style="primary")], 
-        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK, style="primary")], 
-        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership", style="success")]
+        [InlineKeyboardButton(text="📢 Main Group", url=OTP_GROUP_LINK)], 
+        [InlineKeyboardButton(text="💬 Discussion", url=DISCUSSION_GROUP_LINK)], 
+        [InlineKeyboardButton(text="🛡️ Backup", url=BACKUP_GROUP_LINK)], 
+        [InlineKeyboardButton(text="✅ Verify join request", callback_data="check_membership")]
     ])
 
 async def check_user_joined(uid):
@@ -83,14 +83,14 @@ async def check_user_joined(uid):
 def build_services_keyboard():
     rows = db("SELECT service, COUNT(*) FROM stock GROUP BY service HAVING COUNT(*) >= ?", (ASSIGN_COUNT,), fetch="all") or []
     if not rows: return None, "⚠️ <b>Out of stock!</b>"
-    btns = [InlineKeyboardButton(text=f"🔹 {s.upper()}", callback_data=f"s_{s}", style="success") for s, _ in rows]
-    return InlineKeyboardMarkup(inline_keyboard=[btns[i:i+2] for i in range(0, len(btns), 2)] + [[InlineKeyboardButton(text="🔙 Back to Menu", callback_data="cb_close_menu", style="danger")]]), "📌 <b>Select a Service:</b>"
+    btns = [InlineKeyboardButton(text=f"🔹 {s.upper()}", callback_data=f"s_{s}") for s, _ in rows]
+    return InlineKeyboardMarkup(inline_keyboard=[btns[i:i+2] for i in range(0, len(btns), 2)] + [[InlineKeyboardButton(text="🔙 Back to Menu", callback_data="cb_close_menu")]]), "📌 <b>Select a Service:</b>"
 
 def build_countries_keyboard(srv):
     rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= ?", (srv, ASSIGN_COUNT), fetch="all") or []
     if not rows: return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
-    kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
-    return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
+    kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}")] for c, r, _ in rows]
+    return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
 @dp.message(F.text.startswith("/addnumber"))
 async def add_num(m: Message):
@@ -114,11 +114,11 @@ async def add_num(m: Message):
     stock_text = f"🎉 <b>New Stock Added!</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n📱 <b>Quantity:</b> <code>{added}</code> numbers\n💵 <b>Rate:</b> <code>${rate:.4f}</code> per OTP\n\n👉 <i>Press 'Get Number' from the Bot to request numbers!</i>"
     
     if TELEGRAM_GROUP_ID:
-        try: await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}", style="success")]]), parse_mode="HTML")
+        try: await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}")]]), parse_mode="HTML")
         except Exception: pass
     for u in (db("SELECT user_id FROM balances", fetch="all") or []):
         try:
-            await bot.send_message(u[0], stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}", style="success")]]), parse_mode="HTML")
+            await bot.send_message(u[0], stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}")]]), parse_mode="HTML")
             await asyncio.sleep(0.04)
         except Exception: pass
 
@@ -200,17 +200,18 @@ async def num_assign(c: CallbackQuery):
         db(q, (n, c.from_user.id, srv, cntry, rate), commit=True)
 
     rem_count = (db("SELECT COUNT(*) FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="one") or [0])[0]
-    kb = [[InlineKeyboardButton(text=f"➕ +{n}", copy_text={"text": f"+{n}"}, style="success")] for n in nums] + [
-        [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}", style="primary"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}", style="primary")],
-        [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK, style="success")],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list", style="danger")]
+    kb = [[InlineKeyboardButton(text=f"➕ +{n}", callback_data=f"copy_{n}")] for n in nums] + [
+        [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}")],
+        [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK)],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list")]
     ]
     await c.message.edit_text(f"🇳🇬 <b>{cntry} Number Assigned:</b>\n\n⏳ Waiting for OTP...\nPer OTP Rate: <b>${rate:.3f}</b>\n📦 <i>Remaining Stock:</i> <code>{rem_count}</code>\n", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith(("wd_accept_", "wd_reject_")))
 async def cb_wd(c: CallbackQuery):
     if c.from_user.id != ADMIN_ID: return await c.answer("Unauthorized", show_alert=True)
-    act, uid, amt = (parts := c.data.split("_"))[0] + "_" + parts[1], int(parts[2]), float(parts[3])
+    parts = c.data.split("_")
+    act, uid, amt = parts[0] + "_" + parts[1], int(parts[2]), float(parts[3])
     if act == "wd_accept":
         bal = (db("SELECT balance FROM balances WHERE user_id = ?", (uid,), fetch="one") or [0.0])[0]
         if bal >= amt:
@@ -229,14 +230,15 @@ async def cb_wd(c: CallbackQuery):
 @dp.message(F.text.startswith("/start"))
 async def start_h(m: Message):
     db(("INSERT INTO balances (user_id, balance) VALUES (?, 0.0) ON CONFLICT DO NOTHING" if use_pg else "INSERT OR IGNORE INTO balances (user_id, balance) VALUES (?, 0.0)"), (m.from_user.id,), commit=True)
-    if len(parts := m.text.split()) > 1 and parts[1].isdigit() and m.from_user.id != int(parts[1]):
+    parts = m.text.split()
+    if len(parts) > 1 and parts[1].isdigit() and m.from_user.id != int(parts[1]):
         try: db(("INSERT INTO referrals (user_id, referred_by) VALUES (?, ?) ON CONFLICT DO NOTHING" if use_pg else "INSERT OR IGNORE INTO referrals (user_id, referred_by) VALUES (?, ?)"), (m.from_user.id, int(parts[1])), commit=True)
         except Exception: pass
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Access Restricted! Join all groups:", reply_markup=force_join_kb(), parse_mode="HTML")
     await m.answer(f"👋 Welcome <b>{m.from_user.first_name}</b> to <b>Lekdigital Number Zone</b>!", reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(F.text == "💀 SUPPORT")
-async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK, style="primary")]]))
+async def supp_h(m: Message): await m.answer("🛠️ Need help?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Support", url=SUPPORT_LINK)]]))
 
 @dp.message(F.text == "📱 GET NUMBER")
 async def srv_h(m: Message):
@@ -289,7 +291,6 @@ async def traffic_h(m: Message):
     ])
     await m.answer(txt if combined_rows else "No traffic.", reply_markup=main_menu(), parse_mode="HTML")
 
-
 @dp.message(F.text == "💰 BALANCE")
 async def bal_h(m: Message):
     row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one")
@@ -319,7 +320,7 @@ async def wd_amt(m: Message, state: FSMContext):
     except ValueError: return await m.answer("⚠️ Enter valid number:")
     if amt < MIN_WITHDRAWAL or amt > bal: return await m.answer(f"⚠️ Invalid amount! Max: <code>${bal:.2f}</code>", parse_mode="HTML")
     dtls = (await state.get_data()).get("details"); await state.clear(); await m.answer("✅ Request Submitted!")
-    try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}", style="danger")]]))
+    try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}")]]))
     except Exception: pass
 
 @dp.message(F.text == "📊 STATUS")
@@ -338,14 +339,11 @@ async def status_h(m: Message):
 
 async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
     exists = await asyncio.to_thread(db, "SELECT 1 FROM otp_logs WHERE otp_identifier = ?", (otp_identifier,), "one")
-    if exists:
-        return
+    if exists: return
 
     otp_code = extract_otp(body, raw_otp)
     clean_num = re.sub(r"\D", "", str(phone))
-
-    if not clean_num:
-        return
+    if not clean_num: return
 
     row = await asyncio.to_thread(db, "SELECT user_id, service, country, rate FROM assignments WHERE phone_number = ?", (clean_num,), "one")
     uid = row[0] if row else None
@@ -356,8 +354,7 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
         await asyncio.to_thread(db, "INSERT OR IGNORE INTO otp_logs (otp_identifier, user_id) VALUES (?, ?)", (otp_identifier, uid), commit=True)
 
     srv, cntry, rate = (row[1], row[2], row[3]) if row else ("OTP", "Service", DEFAULT_OTP_RATE)
-
-    grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK, style="primary"), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK, style="success")]])
+    grp_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 CHANNEL", url=BACKUP_GROUP_LINK), InlineKeyboardButton(text="💬 CHAT", url=DISCUSSION_GROUP_LINK)]])
     
     if TELEGRAM_GROUP_ID:
         try:
@@ -452,3 +449,7 @@ async def process_telegram_update(request: Request):
 
 @app.get("/")
 async def health_check(): return {"status": "bot is running"}
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
