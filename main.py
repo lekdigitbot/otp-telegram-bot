@@ -221,7 +221,7 @@ async def num_assign(c: CallbackQuery):
     cc_on = get_user_cc_status(c.from_user.id)
     rem_count = (db("SELECT COUNT(*) FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="one") or [0])[0]
     
-    kb = [[InlineKeyboardButton(text=f"{'+' if cc_on else '📱'} {format_phone_display(n, cc_on)}", copy_text={"text": f"{'+' if cc_on else ''}{format_phone_display(n, cc_on)}"}, style="success")] for n in nums] + [
+    kb = [[InlineKeyboardButton(text=f"{'+' if cc_on else '📱'} {format_phone_display(n, cc_on)}", copy_text={"text": f"{format_phone_display(n, cc_on)}"}, style="success")] for n in nums] + [
         [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}", style="primary"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}", style="primary")],
         [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK, style="success")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list", style="danger")]
