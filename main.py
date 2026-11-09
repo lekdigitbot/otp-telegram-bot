@@ -65,7 +65,7 @@ def format_phone_display(phone_str, cc_on):
     if not clean:
         return phone_str
     if cc_on:
-        return "+" + clean if not str(phone_str).startswith("+") else phone_str
+        return "+" clean if not str(phone_str).startswith("+") else phone_str
     else:
         # Automatically strip leading country code dynamically based on international lengths (>10 digits)
         if len(clean) > 10:
