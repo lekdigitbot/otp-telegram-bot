@@ -67,14 +67,11 @@ def format_phone_display(phone_str, cc_on):
     if cc_on:
         return "+" + clean if not str(phone_str).startswith("+") else phone_str
     else:
-        # Common country codes to strip if present (e.g. 234 for Nigeria, 1 for US, etc.)
-        # Strip leading + if any, then check common lengths/prefixes or keep local numbering heuristic
-        for code in ["234", "1", "44", "254", "233", "27", "91"]:
-            if clean.startswith(code) and len(clean) > len(code) + 7:
-                return clean[len(code):]
-        # Fallback heuristic: strip first 1-3 digits if it looks like a long international format
+        # Automatically strip leading country code dynamically based on international lengths (>10 digits)
         if len(clean) > 10:
-            return clean[-10:]
+            for prefix_len in [3, 2, 1]:
+                if len(clean) > prefix_len + 7:
+                    return clean[prefix_len:]
         return clean
 
 def main_menu(): 
@@ -223,7 +220,8 @@ async def num_assign(c: CallbackQuery):
 
     cc_on = get_user_cc_status(c.from_user.id)
     rem_count = (db("SELECT COUNT(*) FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="one") or [0])[0]
-    kb = [[InlineKeyboardButton(text=f"➕ +{format_phone_display(n, cc_on)}", copy_text={"text": f"+{format_phone_display(n, cc_on)}"}, style="success")] for n in nums] + [
+    
+    kb = [[InlineKeyboardButton(text=f"{'+' if cc_on else '📱'} {format_phone_display(n, cc_on)}", copy_text={"text": f"{'+' if cc_on else ''}{format_phone_display(n, cc_on)}"}, style="success")] for n in nums] + [
         [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}", style="primary"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}", style="primary")],
         [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK, style="success")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list", style="danger")]
