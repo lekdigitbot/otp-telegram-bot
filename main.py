@@ -65,9 +65,10 @@ def format_phone_display(phone_str, cc_on):
     if not clean:
         return phone_str
     if cc_on:
-        return "+" clean if not str(phone_str).startswith("+") else phone_str
+        # Just return the clean digits; the button template will add the single "+" prefix
+        return clean
     else:
-        # Automatically strip leading country code dynamically based on international lengths (>10 digits)
+        # Automatically strip leading country code dynamically when OFF
         if len(clean) > 10:
             for prefix_len in [3, 2, 1]:
                 if len(clean) > prefix_len + 7:
