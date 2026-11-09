@@ -46,7 +46,8 @@ init_queries = [
     f"CREATE TABLE IF NOT EXISTS assignments (phone_number TEXT PRIMARY KEY, user_id {'BIGINT' if use_pg else 'INTEGER'}, service TEXT, country TEXT, rate REAL DEFAULT 0.003)",
     f"CREATE TABLE IF NOT EXISTS balances (user_id {'BIGINT' if use_pg else 'INTEGER'} PRIMARY KEY, balance REAL)",
     f"CREATE TABLE IF NOT EXISTS referrals (user_id {'BIGINT' if use_pg else 'INTEGER'} PRIMARY KEY, referred_by {'BIGINT' if use_pg else 'INTEGER'}, otp_count INT DEFAULT 0, rewarded INT DEFAULT 0)",
-    f"CREATE TABLE IF NOT EXISTS otp_logs (id {'SERIAL' if use_pg else 'INTEGER PRIMARY KEY AUTOINCREMENT'} PRIMARY KEY, otp_identifier TEXT UNIQUE, user_id {'BIGINT' if use_pg else 'INTEGER'}, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    f"CREATE TABLE IF NOT EXISTS otp_logs (id {'SERIAL' if use_pg else 'INTEGER PRIMARY KEY AUTOINCREMENT'} PRIMARY KEY, otp_identifier TEXT UNIQUE, user_id {'BIGINT' if use_pg else 'INTEGER'}, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+    f"CREATE TABLE IF NOT EXISTS user_settings (user_id {'BIGINT' if use_pg else 'INTEGER'} PRIMARY KEY, country_code_on INT DEFAULT 1)"
 ]
 for q in init_queries: db(q, commit=True)
 try: db("ALTER TABLE otp_logs ADD COLUMN IF NOT EXISTS otp_identifier TEXT UNIQUE;" if use_pg else "ALTER TABLE otp_logs ADD COLUMN otp_identifier TEXT UNIQUE;", commit=True)
@@ -55,10 +56,31 @@ except Exception: pass
 mask_phone = lambda p: (clean := re.sub(r"\D", "", str(p).strip())) and (clean[:2]+"****"+clean[-2:] if len(clean)<=7 else clean[:5]+"****"+clean[-4:])
 extract_otp = lambda b, f="": str(f).strip() if (f and str(f) != "None") else ((m := re.search(r'\b\d{4,8}\b', str(b))) and m.group(0) or "No Code")
 
+def get_user_cc_status(uid):
+    row = db("SELECT country_code_on FROM user_settings WHERE user_id = ?", (uid,), fetch="one")
+    return row[0] if row else 1
+
+def format_phone_display(phone_str, cc_on):
+    clean = re.sub(r"\D", "", str(phone_str))
+    if not clean:
+        return phone_str
+    if cc_on:
+        return "+" + clean if not str(phone_str).startswith("+") else phone_str
+    else:
+        # Common country codes to strip if present (e.g. 234 for Nigeria, 1 for US, etc.)
+        # Strip leading + if any, then check common lengths/prefixes or keep local numbering heuristic
+        for code in ["234", "1", "44", "254", "233", "27", "91"]:
+            if clean.startswith(code) and len(clean) > len(code) + 7:
+                return clean[len(code):]
+        # Fallback heuristic: strip first 1-3 digits if it looks like a long international format
+        if len(clean) > 10:
+            return clean[-10:]
+        return clean
+
 def main_menu(): 
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📱 GET NUMBER", style="primary"), KeyboardButton(text="🔴 LIVE TRAFFIC", style="primary")], 
-        [KeyboardButton(text="💸 WITHDRAW", style="primary"), KeyboardButton(text="💰 BALANCE", style="primary")], 
+        [KeyboardButton(text="🌐 Country Code On", style="primary"), KeyboardButton(text="💰 BALANCE", style="primary")], 
         [KeyboardButton(text="♾️ REFER AND EARN", style="primary"), KeyboardButton(text="💀 SUPPORT", style="primary")], 
         [KeyboardButton(text="📊 STATUS", style="primary")]
     ], resize_keyboard=True, is_persistent=True)
@@ -199,13 +221,24 @@ async def num_assign(c: CallbackQuery):
         q = "INSERT INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?) ON CONFLICT (phone_number) DO UPDATE SET user_id=EXCLUDED.user_id, service=EXCLUDED.service, country=EXCLUDED.country, rate=EXCLUDED.rate" if use_pg else "INSERT OR REPLACE INTO assignments (phone_number, user_id, service, country, rate) VALUES (?, ?, ?, ?, ?)"
         db(q, (n, c.from_user.id, srv, cntry, rate), commit=True)
 
+    cc_on = get_user_cc_status(c.from_user.id)
     rem_count = (db("SELECT COUNT(*) FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="one") or [0])[0]
-    kb = [[InlineKeyboardButton(text=f"➕ +{n}", copy_text={"text": f"+{n}"}, style="success")] for n in nums] + [
+    kb = [[InlineKeyboardButton(text=f"➕ +{format_phone_display(n, cc_on)}", copy_text={"text": f"+{format_phone_display(n, cc_on)}"}, style="success")] for n in nums] + [
         [InlineKeyboardButton(text="🔁 Change Number", callback_data=f"c_{srv}_{cntry}", style="primary"), InlineKeyboardButton(text="🌍 Change Country", callback_data=f"s_{srv}", style="primary")],
         [InlineKeyboardButton(text="🚀 Otp Group", url=OTP_GROUP_LINK, style="success")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="cb_services_list", style="danger")]
     ]
-    await c.message.edit_text(f"🇳🇬 <b>{cntry} Number Assigned:</b>\n\n⏳ Waiting for OTP...\nPer OTP Rate: <b>${rate:.3f}</b>\n📦 <i>Remaining Stock:</i> <code>{rem_count}</code>\n", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await c.message.edit_text(f"🌍 <b>{cntry} Number Assigned:</b>\n\n⏳ Waiting for OTP...\nPer OTP Rate: <b>${rate:.3f}</b>\n📦 <i>Remaining Stock:</i> <code>{rem_count}</code>\n", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+
+@dp.callback_query(F.data == "start_withdrawal")
+async def start_withdrawal_cb(c: CallbackQuery, state: FSMContext):
+    bal = (db("SELECT balance FROM balances WHERE user_id = ?", (c.from_user.id,), fetch="one") or [0.0])[0]
+    if bal < MIN_WITHDRAWAL:
+        return await c.answer(f"❌ Balance too low! Bal: ${bal:.2f} (Min: ${MIN_WITHDRAWAL:.2f})", show_alert=True)
+    await state.set_state(WithdrawalState.waiting_for_details)
+    try: await c.message.delete()
+    except Exception: pass
+    await c.message.answer("💵 Send your payment details (Bank/Crypto):", parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith(("wd_accept_", "wd_reject_")))
 async def cb_wd(c: CallbackQuery):
@@ -229,6 +262,7 @@ async def cb_wd(c: CallbackQuery):
 @dp.message(F.text.startswith("/start"))
 async def start_h(m: Message):
     db(("INSERT INTO balances (user_id, balance) VALUES (?, 0.0) ON CONFLICT DO NOTHING" if use_pg else "INSERT OR IGNORE INTO balances (user_id, balance) VALUES (?, 0.0)"), (m.from_user.id,), commit=True)
+    db(("INSERT INTO user_settings (user_id, country_code_on) VALUES (?, 1) ON CONFLICT DO NOTHING" if use_pg else "INSERT OR IGNORE INTO user_settings (user_id, country_code_on) VALUES (?, 1)"), (m.from_user.id,), commit=True)
     if len(parts := m.text.split()) > 1 and parts[1].isdigit() and m.from_user.id != int(parts[1]):
         try: db(("INSERT INTO referrals (user_id, referred_by) VALUES (?, ?) ON CONFLICT DO NOTHING" if use_pg else "INSERT OR IGNORE INTO referrals (user_id, referred_by) VALUES (?, ?)"), (m.from_user.id, int(parts[1])), commit=True)
         except Exception: pass
@@ -243,6 +277,24 @@ async def srv_h(m: Message):
     if not await check_user_joined(m.from_user.id): return await m.answer("⚠️ Access Restricted! Join required groups:", reply_markup=force_join_kb(), parse_mode="HTML")
     kb, txt = build_services_keyboard()
     await m.answer(txt, reply_markup=kb or main_menu(), parse_mode="HTML")
+
+@dp.message(F.text.in_({"🌐 Country Code On", "🌐 Country Code Off"}))
+async def toggle_cc(m: Message):
+    uid = m.from_user.id
+    current = get_user_cc_status(uid)
+    new_status = 0 if current == 1 else 1
+    q = "INSERT INTO user_settings (user_id, country_code_on) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET country_code_on = EXCLUDED.country_code_on" if use_pg else "INSERT OR REPLACE INTO user_settings (user_id, country_code_on) VALUES (?, ?)"
+    db(q, (uid, new_status), commit=True)
+    
+    btn_text = "🌐 Country Code On" if new_status == 1 else "🌐 Country Code Off"
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📱 GET NUMBER", style="primary"), KeyboardButton(text="🔴 LIVE TRAFFIC", style="primary")], 
+        [KeyboardButton(text=btn_text, style="primary"), KeyboardButton(text="💰 BALANCE", style="primary")], 
+        [KeyboardButton(text="♾️ REFER AND EARN", style="primary"), KeyboardButton(text="💀 SUPPORT", style="primary")], 
+        [KeyboardButton(text="📊 STATUS", style="primary")]
+    ], resize_keyboard=True, is_persistent=True)
+    
+    await m.answer(f"✅ Country Code formatting is now <b>{'ON (+234...)`' if new_status == 1 else 'OFF (Local numbers without prefix)'}</b>", reply_markup=kb, parse_mode="HTML")
 
 @dp.message(F.text == "🔴 LIVE TRAFFIC")
 async def traffic_h(m: Message):
@@ -289,23 +341,14 @@ async def traffic_h(m: Message):
     ])
     await m.answer(txt if combined_rows else "No traffic.", reply_markup=main_menu(), parse_mode="HTML")
 
-
 @dp.message(F.text == "💰 BALANCE")
 async def bal_h(m: Message):
     row = db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one")
-    await m.answer(f"👤 <b>ID:</b> <code>{m.from_user.id}</code>\n💵 <b>Balance:</b> <code>${(row[0] if row else 0.0):.4f}</code>", parse_mode="HTML")
-
-@dp.message(F.text == "♾️ REFER AND EARN")
-async def ref_h(m: Message):
-    bot_info, row = await bot.get_me(), db("SELECT COUNT(*), SUM(rewarded) FROM referrals WHERE referred_by = ?", (m.from_user.id,), fetch="one")
-    tot, rwd = (row[0] if row and row[0] else 0), (row[1] if row and row[1] else 0)
-    await m.answer(f"♾️ <b>REFER AND EARN</b>\n\nEarn <b>${REFERRAL_BONUS:.2f}</b> per invite!\n📌 <b>Rule:</b> Friend must complete <b>3 OTP transactions</b>.\n\n🔗 <b>Referral Link:</b>\n<code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n\n👥 <b>Invited:</b> <code>{tot}</code>\n💵 <b>Rewarded:</b> <code>{rwd}</code>\n💰 <b>Earned:</b> <code>${rwd * REFERRAL_BONUS:.2f}</code>", parse_mode="HTML")
-
-@dp.message(F.text == "💸 WITHDRAW")
-async def wd_start(m: Message, state: FSMContext):
-    bal = (db("SELECT balance FROM balances WHERE user_id = ?", (m.from_user.id,), fetch="one") or [0.0])[0]
-    if bal < MIN_WITHDRAWAL: return await m.answer(f"❌ Balance too low! Bal: <code>${bal:.2f}</code> (Min: <code>${MIN_WITHDRAWAL:.2f}</code>)", parse_mode="HTML")
-    await state.set_state(WithdrawalState.waiting_for_details); await m.answer("💵 Send your payment details (Bank/Crypto):", parse_mode="HTML")
+    bal = row[0] if row else 0.0
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💸 Withdraw", callback_data="start_withdrawal", style="success")]
+    ])
+    await m.answer(f"👤 <b>ID:</b> <code>{m.from_user.id}</code>\n💵 <b>Balance:</b> <code>${bal:.4f}</code>", reply_markup=kb, parse_mode="HTML")
 
 @dp.message(WithdrawalState.waiting_for_details)
 async def wd_dtls(m: Message, state: FSMContext):
@@ -321,6 +364,12 @@ async def wd_amt(m: Message, state: FSMContext):
     dtls = (await state.get_data()).get("details"); await state.clear(); await m.answer("✅ Request Submitted!")
     try: await bot.send_message(ADMIN_ID, f"🔔 <b>WITHDRAWAL!</b>\nUser: {m.from_user.first_name} (<code>{m.from_user.id}</code>)\nAmount: <code>${amt:.2f}</code>\nDetails:\n<code>{dtls}</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept", callback_data=f"wd_accept_{m.from_user.id}_{amt}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"wd_reject_{m.from_user.id}_{amt}", style="danger")]]))
     except Exception: pass
+
+@dp.message(F.text == "♾️ REFER AND EARN")
+async def ref_h(m: Message):
+    bot_info, row = await bot.get_me(), db("SELECT COUNT(*), SUM(rewarded) FROM referrals WHERE referred_by = ?", (m.from_user.id,), fetch="one")
+    tot, rwd = (row[0] if row and row[0] else 0), (row[1] if row and row[1] else 0)
+    await m.answer(f"♾️ <b>REFER AND EARN</b>\n\nEarn <b>${REFERRAL_BONUS:.2f}</b> per invite!\n📌 <b>Rule:</b> Friend must complete <b>3 OTP transactions</b>.\n\n🔗 <b>Referral Link:</b>\n<code>https://t.me/{bot_info.username}?start={m.from_user.id}</code>\n\n👥 <b>Invited:</b> <code>{tot}</code>\n💵 <b>Rewarded:</b> <code>{rwd}</code>\n💰 <b>Earned:</b> <code>${rwd * REFERRAL_BONUS:.2f}</code>", parse_mode="HTML")
 
 @dp.message(F.text == "📊 STATUS")
 async def status_h(m: Message):
@@ -390,7 +439,9 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
                 await asyncio.to_thread(db, "UPDATE referrals SET otp_count = otp_count + 1 WHERE user_id = ?", (uid,), commit=True)
 
         try:
-            await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
+            cc_on = get_user_cc_status(uid)
+            disp_phone = format_phone_display(phone, cc_on)
+            await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(disp_phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
         except Exception as e:
             print(f"[USER MSG ERROR] {e}")
 
