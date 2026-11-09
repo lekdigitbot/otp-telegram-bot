@@ -18,7 +18,7 @@ DATABASE_URL, RENDER_URL = os.getenv("DATABASE_URL", "").replace('"', '').replac
 ADMIN_ID, TELEGRAM_GROUP_ID, DISCUSSION_GROUP_ID, BACKUP_GROUP_ID = int(os.getenv("ADMIN_ID", 0) or 0), int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0), int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0), int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
 OTP_GROUP_LINK, DISCUSSION_GROUP_LINK, BACKUP_GROUP_LINK, SUPPORT_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone"), os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup"), os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup"), os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
-THIRDWAVE_BASE_URL, IPRN_BASE_URL = "https://clients.thirdwave.im/api/v1", "https://api.iprn.pro/api/stock/public"
+THIRDWAVE_BASE_URL, IPRN_BASE_URL = "https://thirdwave.im/api/v1", "https://api.iprn.pro/api/stock/public"
 DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS, ASSIGN_COUNT = 0.003, 0.25, 0.01, 3
 
 if not BOT_TOKEN: raise ValueError("❌ Missing BOT_TOKEN!")
@@ -109,7 +109,7 @@ def build_countries_keyboard(srv):
     rows = db("SELECT country, rate, COUNT(*) FROM stock WHERE service = ? GROUP BY country, rate HAVING COUNT(*) >= ?", (srv, ASSIGN_COUNT), fetch="all") or []
     if not rows: return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
     kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
-    return InlineKeyboardMarkup(inline_keyboard=kb [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
+    return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
 @dp.message(F.text.startswith("/addnumber"))
 async def add_num(m: Message):
