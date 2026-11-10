@@ -478,8 +478,17 @@ async def poll_traffic():
                 providers = await asyncio.to_thread(db, "SELECT name, base_url, api_key FROM providers", fetch="all") or []
                 for prov_name, base_url, api_key in providers:
                     try:
-                        headers = {"Authorization": f"Bearer {api_key}", "x-api-key": api_key, "Accept": "application/json"}
-                        endpoint = f"{base_url}/edr" if "iprn" in base_url.lower() else f"{base_url}/traffic?page=1&limit=50&pageSize=50"
+                        headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+                        
+                        # Set endpoint based on panel type
+                        url_lower = base_url.lower()
+                        if "iprn" in url_lower:
+                            endpoint = f"{base_url}/edr"
+                        elif "tempnumbers" in url_lower:
+                            endpoint = f"{base_url}/api/traffic" # Adjust this if your panel endpoint path differs
+                        else:
+                            endpoint = f"{base_url}/traffic?page=1&limit=50&pageSize=50"
+                            
                         async with http_session.get(endpoint, headers=headers) as r:
                             if r.status == 200:
                                 res_json = await r.json()
@@ -496,6 +505,7 @@ async def poll_traffic():
         except Exception as e: print(f"[WORKER ERROR] {e}")
         await asyncio.sleep(1.0)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_session; http_session = aiohttp.ClientSession()
@@ -508,6 +518,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# --- 1. TELEGRAM WEBHOOK ROUTE ---
 @app.post("/")
 @app.post("/telegram-webhook")
 async def process_telegram_update(request: Request):
@@ -515,5 +526,27 @@ async def process_telegram_update(request: Request):
     await dp.feed_update(bot, Update.model_validate(data, context={"bot": bot}))
     return {"status": "ok"}
 
+
+# --- 2. GENERIC PROVIDER WEBHOOK ROUTE (PASTE THIS HERE) ---
+@app.post("/webhook/{provider_name}")
+async def generic_webhook(provider_name: str, request: Request):
+    try:
+        data = await request.json()
+        phone = str(data.get("destinationNumber") or data.get("phone") or data.get("number") or data.get("b_number") or "")
+        body = str(data.get("messageBody") or data.get("message") or data.get("text") or data.get("body") or "")
+        raw_otp = str(data.get("otp") or data.get("code") or "")
+        
+        if phone and body:
+            unique_str = f"{provider_name.lower()}_{phone}_{body.strip()}"
+            mid = hashlib.md5(unique_str.encode()).hexdigest()
+            await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=raw_otp)
+            return {"status": "success"}
+    except Exception as e:
+        print(f"[WEBHOOK ERROR] {e}")
+    return {"status": "error"}, 400
+
+
+# --- 3. HEALTH CHECK ROUTE ---
 @app.get("/")
-async def health_check(): return {"status": "bot is running"}
+async def health_check(): 
+    return {"status": "bot is running"}
