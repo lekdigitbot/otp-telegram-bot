@@ -12,13 +12,12 @@ try:
 except ImportError:
     HAS_PSYCOPG2 = False
 
-BOT_TOKEN, THIRDWAVE_API_KEY, IPRN_API_KEY = os.getenv("BOT_TOKEN"), os.getenv("THIRDWAVE_API_KEY"), os.getenv("IPRN_API_KEY")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL, RENDER_URL = os.getenv("DATABASE_URL", "").replace('"', '').replace("'", "").strip(), os.getenv("RENDER_URL", "https://otp-telegram-bot-fpmp.onrender.com")
 
 ADMIN_ID, TELEGRAM_GROUP_ID, DISCUSSION_GROUP_ID, BACKUP_GROUP_ID = int(os.getenv("ADMIN_ID", 0) or 0), int(os.getenv("TELEGRAM_GROUP_ID", 0) or 0), int(os.getenv("DISCUSSION_GROUP_ID", 0) or 0), int(os.getenv("BACKUP_GROUP_ID", 0) or 0)
 OTP_GROUP_LINK, DISCUSSION_GROUP_LINK, BACKUP_GROUP_LINK, SUPPORT_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/lekotpzone"), os.getenv("DISCUSSION_GROUP_LINK", "https://t.me/lekdigitaldiscussiongroup"), os.getenv("BACKUP_GROUP_LINK", "https://t.me/lekdigitalbackupgroup"), os.getenv("SUPPORT_LINK", "https://t.me/lekdigitalsupport")
 
-THIRDWAVE_BASE_URL, IPRN_BASE_URL = "https://thirdwave.im/api/v1", "https://api.iprn.pro/api/stock/public"
 DEFAULT_OTP_RATE, MIN_WITHDRAWAL, REFERRAL_BONUS, ASSIGN_COUNT = 0.003, 0.25, 0.01, 3
 
 if not BOT_TOKEN: raise ValueError("❌ Missing BOT_TOKEN!")
@@ -47,7 +46,8 @@ init_queries = [
     f"CREATE TABLE IF NOT EXISTS balances (user_id {'BIGINT' if use_pg else 'INTEGER'} PRIMARY KEY, balance REAL)",
     f"CREATE TABLE IF NOT EXISTS referrals (user_id {'BIGINT' if use_pg else 'INTEGER'} PRIMARY KEY, referred_by {'BIGINT' if use_pg else 'INTEGER'}, otp_count INT DEFAULT 0, rewarded INT DEFAULT 0)",
     f"CREATE TABLE IF NOT EXISTS otp_logs (id {'SERIAL' if use_pg else 'INTEGER PRIMARY KEY AUTOINCREMENT'} PRIMARY KEY, otp_identifier TEXT UNIQUE, user_id {'BIGINT' if use_pg else 'INTEGER'}, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-    f"CREATE TABLE IF NOT EXISTS user_settings (user_id {'BIGINT' if use_pg else 'INTEGER'} PRIMARY KEY, country_code_on INT DEFAULT 1)"
+    f"CREATE TABLE IF NOT EXISTS user_settings (user_id {'BIGINT' if use_pg else 'INTEGER'} PRIMARY KEY, country_code_on INT DEFAULT 1)",
+    f"CREATE TABLE IF NOT EXISTS providers (id {'SERIAL' if use_pg else 'INTEGER PRIMARY KEY AUTOINCREMENT'} PRIMARY KEY, name TEXT UNIQUE, base_url TEXT, api_key TEXT)"
 ]
 for q in init_queries: db(q, commit=True)
 try: db("ALTER TABLE otp_logs ADD COLUMN IF NOT EXISTS otp_identifier TEXT UNIQUE;" if use_pg else "ALTER TABLE otp_logs ADD COLUMN otp_identifier TEXT UNIQUE;", commit=True)
@@ -65,10 +65,8 @@ def format_phone_display(phone_str, cc_on):
     if not clean:
         return phone_str
     if cc_on:
-        # Just return the clean digits; the button template will add the single "+" prefix
         return clean
     else:
-        # Automatically strip leading country code dynamically when OFF
         if len(clean) > 10:
             for prefix_len in [3, 2, 1]:
                 if len(clean) > prefix_len + 7:
@@ -111,6 +109,45 @@ def build_countries_keyboard(srv):
     if not rows: return None, f"⚠️ <b>Out of stock for {html.escape(srv)}.</b>"
     kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
     return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
+
+# --- PROVIDER MANAGEMENT ADMIN COMMANDS ---
+@dp.message(F.text.startswith("/addprovider"))
+async def add_provider_h(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    parts = m.text.strip().split(maxsplit=3)
+    if len(parts) < 4:
+        return await m.answer("⚠️ Usage: <code>/addprovider Name BaseURL API_Key</code>", parse_mode="HTML")
+    name, base_url, api_key = parts[1].capitalize(), parts[2].strip().rstrip("/"), parts[3].strip()
+    try:
+        if use_pg:
+            db("INSERT INTO providers (name, base_url, api_key) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET base_url = EXCLUDED.base_url, api_key = EXCLUDED.api_key", (name, base_url, api_key), commit=True)
+        else:
+            db("INSERT OR REPLACE INTO providers (name, base_url, api_key) VALUES (?, ?, ?)", (name, base_url, api_key), commit=True)
+        await m.answer(f"✅ Provider <b>{name}</b> added/updated successfully!", parse_mode="HTML")
+    except Exception as e:
+        await m.answer(f"❌ Error adding provider: {e}", parse_mode="HTML")
+
+@dp.message(F.text == "/listproviders")
+async def list_providers_h(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    rows = db("SELECT name, base_url FROM providers", fetch="all") or []
+    if not rows:
+        return await m.answer("ℹ️ No dynamic providers found in database.", parse_mode="HTML")
+    txt = "🔌 <b>Active Providers:</b>\n\n" + "".join([f"🔹 <b>{name}</b>: <code>{url}</code>\n" for name, url in rows])
+    await m.answer(txt, parse_mode="HTML")
+
+@dp.message(F.text.startswith("/delprovider"))
+async def del_provider_h(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    parts = m.text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        return await m.answer("⚠️ Usage: <code>/delprovider Name</code>", parse_mode="HTML")
+    name = parts[1].capitalize()
+    cnt = db("DELETE FROM providers WHERE name = ?", (name,), fetch="rowcount", commit=True)
+    if cnt:
+        await m.answer(f"✅ Provider <b>{name}</b> deleted successfully.", parse_mode="HTML")
+    else:
+        await m.answer(f"❌ Provider <b>{name}</b> not found.", parse_mode="HTML")
 
 @dp.message(F.text.startswith("/addnumber"))
 async def add_num(m: Message):
@@ -303,31 +340,20 @@ async def traffic_h(m: Message):
         return await m.answer("⚠ Session starting...", reply_markup=main_menu())
     
     combined_rows = []
+    providers = db("SELECT name, base_url, api_key FROM providers", fetch="all") or []
     
-    if THIRDWAVE_API_KEY:
+    for prov_name, base_url, api_key in providers:
         try:
-            async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=20&pageSize=20", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "x-api-key": THIRDWAVE_API_KEY, "Accept": "application/json"}) as r:
+            headers = {"Authorization": f"Bearer {api_key}", "x-api-key": api_key, "Accept": "application/json"}
+            endpoint = f"{base_url}/edr" if "iprn" in base_url.lower() else f"{base_url}/traffic?page=1&limit=20&pageSize=20"
+            async with http_session.get(endpoint, headers=headers) as r:
                 if r.status == 200:
                     res = await r.json()
-                    rows = res.get("rows", []) if isinstance(res, dict) else (res if isinstance(res, list) else [])
+                    rows = res.get("data", []) or res.get("rows", []) if isinstance(res, dict) else (res if isinstance(res, list) else [])
                     for i in rows:
                         phone = str(i.get("destinationNumber") or i.get("phone") or i.get("number") or i.get("b_number") or "")
                         msg = str(i.get("messageBody") or i.get("message") or i.get("text") or i.get("body") or "")
                         otp = extract_otp(msg, i.get("otp") or i.get("code"))
-                        if phone and msg:
-                            combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
-        except Exception: pass
-
-    if IPRN_API_KEY:
-        try:
-            async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=20", headers={"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
-                if r.status == 200:
-                    res = await r.json()
-                    items = res.get("data", []) if isinstance(res, dict) else (res if isinstance(res, list) else [])
-                    for i in items:
-                        phone = str(i.get("b_number") or i.get("phone") or i.get("number") or "")
-                        msg = str(i.get("message") or i.get("text") or i.get("body") or "")
-                        otp = extract_otp(msg)
                         if phone and msg:
                             combined_rows.append({"phone": phone, "msg": msg, "otp": otp})
         except Exception: pass
@@ -440,7 +466,8 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
         try:
             cc_on = get_user_cc_status(uid)
             disp_phone = format_phone_display(phone, cc_on)
-            await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(str(disp_phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
+            prefix = "+" if cc_on else ""
+            await bot.send_message(uid, f"🌐 <b>OTP Received ({srv} - {cntry})!</b>\n📱 <code>{html.escape(prefix + str(disp_phone))}</code>\n🔑 Code: <code>{html.escape(otp_code)}</code>", parse_mode="HTML")
         except Exception as e:
             print(f"[USER MSG ERROR] {e}")
 
@@ -448,36 +475,24 @@ async def poll_traffic():
     while True:
         try:
             if http_session and not http_session.closed:
-                if THIRDWAVE_API_KEY:
+                providers = await asyncio.to_thread(db, "SELECT name, base_url, api_key FROM providers", fetch="all") or []
+                for prov_name, base_url, api_key in providers:
                     try:
-                        async with http_session.get(f"{THIRDWAVE_BASE_URL}/traffic?page=1&limit=50&pageSize=50", headers={"Authorization": f"Bearer {THIRDWAVE_API_KEY}", "x-api-key": THIRDWAVE_API_KEY, "Accept": "application/json"}) as r:
+                        headers = {"Authorization": f"Bearer {api_key}", "x-api-key": api_key, "Accept": "application/json"}
+                        endpoint = f"{base_url}/edr" if "iprn" in base_url.lower() else f"{base_url}/traffic?page=1&limit=50&pageSize=50"
+                        async with http_session.get(endpoint, headers=headers) as r:
                             if r.status == 200:
                                 res_json = await r.json()
-                                rows = res_json.get("rows", []) if isinstance(res_json, dict) else (res_json if isinstance(res_json, list) else [])
+                                rows = res_json.get("data", []) or res_json.get("rows", []) if isinstance(res_json, dict) else (res_json if isinstance(res_json, list) else [])
                                 for item in rows:
-                                    phone = str(item.get("destinationNumber") or item.get("phone") or item.get("number") or "")
-                                    body = str(item.get("messageBody") or item.get("message") or item.get("text") or "")
+                                    phone = str(item.get("destinationNumber") or item.get("phone") or item.get("number") or item.get("b_number") or "")
+                                    body = str(item.get("messageBody") or item.get("message") or item.get("text") or item.get("body") or "")
                                     raw_otp = str(item.get("otp") or item.get("code") or "")
                                     if not phone or not body: continue
-                                    unique_str = f"tw_{phone}_{body.strip()}"
+                                    unique_str = f"{prov_name.lower()}_{phone}_{body.strip()}"
                                     mid = hashlib.md5(unique_str.encode()).hexdigest()
                                     await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=raw_otp)
-                    except Exception as tw_e: print(f"[THIRDWAVE ERROR] {tw_e}")
-
-                if IPRN_API_KEY:
-                    try:
-                        async with http_session.get(f"{IPRN_BASE_URL}/edr?page=1&per_page=50", headers={"Authorization": f"Bearer {IPRN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}) as r:
-                            if r.status == 200:
-                                res_data = await r.json()
-                                items = res_data.get("data", []) if isinstance(res_data, dict) else (res_data if isinstance(res_data, list) else [])
-                                for item in items:
-                                    phone = str(item.get("b_number") or item.get("phone") or "")
-                                    body = str(item.get("message") or item.get("text") or "")
-                                    if not phone or not body: continue
-                                    unique_str = f"iprn_{phone}_{body.strip()}"
-                                    mid = hashlib.md5(unique_str.encode()).hexdigest()
-                                    await process_incoming_otp(otp_identifier=mid, phone=phone, body=body)
-                    except Exception as iprn_e: print(f"[IPRN ERROR] {iprn_e}")
+                    except Exception as prov_e: print(f"[{prov_name} ERROR] {prov_e}")
         except Exception as e: print(f"[WORKER ERROR] {e}")
         await asyncio.sleep(1.0)
 
