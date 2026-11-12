@@ -478,15 +478,31 @@ async def poll_traffic():
                 providers = await asyncio.to_thread(db, "SELECT name, base_url, api_key FROM providers", fetch="all") or []
                 for prov_name, base_url, api_key in providers:
                     try:
-                        headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
-                        
-                        # Set endpoint based on panel type
                         url_lower = base_url.lower()
+                        
                         if "iprn" in url_lower:
+                            headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
                             endpoint = f"{base_url}/edr"
+                            
                         elif "tempnumbers" in url_lower:
-                            endpoint = f"{base_url}/api/traffic" # Adjust this if your panel endpoint path differs
+                            # If api_key saved in DB is formatted as "username:password", we auto-generate the token!
+                            # Or if you saved a direct token, we use it. Let's support both:
+                            if ":" in api_key:
+                                uname, pwd = api_key.split(":", 1)
+                                async with http_session.post(f"{base_url.rstrip('/')}/api/gentoken", json={"username": uname, "password": pwd}) as auth_res:
+                                    if auth_res.status == 200:
+                                        auth_data = await auth_res.json()
+                                        token = auth_data.get("data", {}).get("access_token")
+                                    else:
+                                        print(f"[Tempnumbers Auth Failed] Status: {auth_res.status}")
+                                        continue
+                            else:
+                                token = api_key # Fallback if you pasted a direct token
+                                
+                            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+                            endpoint = f"{base_url.rstrip('/')}/api/traffic?page=1&limit=50"
                         else:
+                            headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
                             endpoint = f"{base_url}/traffic?page=1&limit=50&pageSize=50"
                             
                         async with http_session.get(endpoint, headers=headers) as r:
