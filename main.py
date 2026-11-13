@@ -472,6 +472,7 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
             print(f"[USER MSG ERROR] {e}")
 
 async def poll_traffic():
+async def poll_traffic():
     while True:
         try:
             if http_session and not http_session.closed:
@@ -479,32 +480,39 @@ async def poll_traffic():
                 for prov_name, base_url, api_key in providers:
                     try:
                         url_lower = base_url.lower()
+                        token = None
                         
                         if "iprn" in url_lower:
-                            headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+                            token = api_key
                             endpoint = f"{base_url}/edr"
+                            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
                             
                         elif "tempnumbers" in url_lower:
-                            # If api_key saved in DB is formatted as "username:password", we auto-generate the token!
-                            # Or if you saved a direct token, we use it. Let's support both:
+                            # Split your saved "username:password" string
                             if ":" in api_key:
                                 uname, pwd = api_key.split(":", 1)
+                                # Automatically call their gentoken endpoint with username and password
                                 async with http_session.post(f"{base_url.rstrip('/')}/api/gentoken", json={"username": uname, "password": pwd}) as auth_res:
                                     if auth_res.status == 200:
                                         auth_data = await auth_res.json()
-                                        token = auth_data.get("data", {}).get("access_token")
+                                        # Extract the access token from the response
+                                        token = auth_data.get("data", {}).get("access_token") or auth_data.get("access_token")
                                     else:
                                         print(f"[Tempnumbers Auth Failed] Status: {auth_res.status}")
                                         continue
                             else:
-                                token = api_key # Fallback if you pasted a direct token
+                                token = api_key # Fallback if a direct token was used
                                 
                             headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
                             endpoint = f"{base_url.rstrip('/')}/api/traffic?page=1&limit=50"
                         else:
-                            headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+                            token = api_key
+                            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
                             endpoint = f"{base_url}/traffic?page=1&limit=50&pageSize=50"
-                            
+
+                        if not token:
+                            continue
+
                         async with http_session.get(endpoint, headers=headers) as r:
                             if r.status == 200:
                                 res_json = await r.json()
