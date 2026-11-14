@@ -110,7 +110,6 @@ def build_countries_keyboard(srv):
     kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
     return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
-# --- PROVIDER MANAGEMENT ADMIN COMMANDS ---
 @dp.message(F.text.startswith("/addprovider"))
 async def add_provider_h(m: Message):
     if m.from_user.id != ADMIN_ID: return
@@ -344,8 +343,29 @@ async def traffic_h(m: Message):
     
     for prov_name, base_url, api_key in providers:
         try:
-            headers = {"Authorization": f"Bearer {api_key}", "x-api-key": api_key, "Accept": "application/json"}
-            endpoint = f"{base_url}/edr" if "iprn" in base_url.lower() else f"{base_url}/traffic?page=1&limit=20&pageSize=20"
+            url_lower = base_url.lower()
+            token = None
+            if "iprn" in url_lower:
+                token = api_key
+                endpoint = f"{base_url}/edr"
+                headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            elif "tempnumbers" in url_lower:
+                if ":" in api_key:
+                    uname, pwd = api_key.split(":", 1)
+                    async with http_session.post(f"{base_url.rstrip('/')}/api/gentoken", json={"username": uname, "password": pwd}) as auth_res:
+                        if auth_res.status == 200:
+                            auth_data = await auth_res.json()
+                            token = auth_data.get("data", {}).get("access_token") or auth_data.get("access_token")
+                else:
+                    token = api_key
+                if not token: continue
+                headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+                endpoint = f"{base_url.rstrip('/')}/api/traffic?page=1&limit=20"
+            else:
+                token = api_key
+                headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+                endpoint = f"{base_url}/traffic?page=1&limit=20&pageSize=20"
+
             async with http_session.get(endpoint, headers=headers) as r:
                 if r.status == 200:
                     res = await r.json()
@@ -472,7 +492,6 @@ async def process_incoming_otp(otp_identifier, phone, body, raw_otp=""):
             print(f"[USER MSG ERROR] {e}")
 
 async def poll_traffic():
-async def poll_traffic():
     while True:
         try:
             if http_session and not http_session.closed:
@@ -481,37 +500,29 @@ async def poll_traffic():
                     try:
                         url_lower = base_url.lower()
                         token = None
-                        
                         if "iprn" in url_lower:
                             token = api_key
                             endpoint = f"{base_url}/edr"
                             headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-                            
                         elif "tempnumbers" in url_lower:
-                            # Split your saved "username:password" string
                             if ":" in api_key:
                                 uname, pwd = api_key.split(":", 1)
-                                # Automatically call their gentoken endpoint with username and password
                                 async with http_session.post(f"{base_url.rstrip('/')}/api/gentoken", json={"username": uname, "password": pwd}) as auth_res:
                                     if auth_res.status == 200:
                                         auth_data = await auth_res.json()
-                                        # Extract the access token from the response
                                         token = auth_data.get("data", {}).get("access_token") or auth_data.get("access_token")
                                     else:
-                                        print(f"[Tempnumbers Auth Failed] Status: {auth_res.status}")
-                                        continue
+                                        err_body = await auth_res.text()
+                                        print(f"[Tempnumbers Auth Failed] Status: {auth_res.status} | Res: {err_body}")
                             else:
-                                token = api_key # Fallback if a direct token was used
-                                
+                                token = api_key
+                            if not token: continue
                             headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
                             endpoint = f"{base_url.rstrip('/')}/api/traffic?page=1&limit=50"
                         else:
                             token = api_key
                             headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
                             endpoint = f"{base_url}/traffic?page=1&limit=50&pageSize=50"
-
-                        if not token:
-                            continue
 
                         async with http_session.get(endpoint, headers=headers) as r:
                             if r.status == 200:
@@ -529,7 +540,6 @@ async def poll_traffic():
         except Exception as e: print(f"[WORKER ERROR] {e}")
         await asyncio.sleep(1.0)
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_session; http_session = aiohttp.ClientSession()
@@ -542,7 +552,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 1. TELEGRAM WEBHOOK ROUTE ---
 @app.post("/")
 @app.post("/telegram-webhook")
 async def process_telegram_update(request: Request):
@@ -550,8 +559,6 @@ async def process_telegram_update(request: Request):
     await dp.feed_update(bot, Update.model_validate(data, context={"bot": bot}))
     return {"status": "ok"}
 
-
-# --- 2. GENERIC PROVIDER WEBHOOK ROUTE (PASTE THIS HERE) ---
 @app.post("/webhook/{provider_name}")
 async def generic_webhook(provider_name: str, request: Request):
     try:
@@ -569,8 +576,5 @@ async def generic_webhook(provider_name: str, request: Request):
         print(f"[WEBHOOK ERROR] {e}")
     return {"status": "error"}, 400
 
-
-# --- 3. HEALTH CHECK ROUTE ---
 @app.get("/")
-async def health_check(): 
-    return {"status": "bot is running"}
+async def health_check(): return {"status": "bot is running"}
