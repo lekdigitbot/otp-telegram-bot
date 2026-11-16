@@ -120,6 +120,24 @@ def build_countries_keyboard(srv):
     kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
     return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
+# --- HELPER: BROADCAST NEW STOCK TO GROUP & USERS ---
+async def broadcast_new_stock(srv, cntry, added, rate):
+    bot_info = await bot.get_me()
+    stock_text = f"🎉 <b>New Stock Added!</b>\n\n🔹 <b>Service:</b> {srv}\n🌍 <b>Country:</b> {cntry}\n📱 <b>Quantity:</b> <code>{added}</code> numbers\n💵 <b>Rate:</b> <code>${rate:.4f}</code> per OTP\n\n👉 <i>Press 'Get Number' from the Bot to request numbers!</i>"
+    
+    if TELEGRAM_GROUP_ID:
+        try: 
+            await bot.send_message(TELEGRAM_GROUP_ID, stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number from Bot — {srv}", url=f"https://t.me/{bot_info.username}", style="success")]]), parse_mode="HTML")
+        except Exception: 
+            pass
+            
+    for u in (db("SELECT user_id FROM balances", fetch="all") or []):
+        try:
+            await bot.send_message(u[0], stock_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📲 Get Number — {srv}", callback_data=f"s_{srv}", style="success")]]), parse_mode="HTML")
+            await asyncio.sleep(0.04)
+        except Exception: 
+            pass
+
 # --- STEP-BY-STEP FILE UPLOAD FLOW ---
 @dp.message(F.text == "/uploadfile")
 async def start_upload_file(m: Message, state: FSMContext):
@@ -156,15 +174,17 @@ async def process_upload_document(m: Message, state: FSMContext):
         return await m.answer(f"❌ Failed to download file: {e}")
 
     nums = [re.sub(r"\D", "", l) for l in content.splitlines() if re.sub(r"\D", "", l.strip())]
-    
-    # Fast bulk insertion using executemany to avoid timeouts/freezes
     q = "INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?) ON CONFLICT (phone_number) DO NOTHING" if use_pg else "INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)"
     params = [(srv, cntry, rate, n) for n in nums if len(n) >= 5]
     
     added = db(q, params, commit=True, executemany=True) or 0
     await m.answer(f"✅ Successfully added <b>{added}</b> number(s) from file for <b>{srv} ({cntry})</b> at ${rate:.4f} per OTP!", parse_mode="HTML")
+    
+    # Trigger broadcast alert to group and members
+    if added > 0:
+        await broadcast_new_stock(srv, cntry, added, rate)
 
-# --- OTHER ADMIN COMMANDS ---
+# --- ADMIN COMMANDS ---
 @dp.message(F.text.startswith("/setmin"))
 async def set_min_withdrawal(m: Message):
     if m.from_user.id != ADMIN_ID: return
@@ -230,7 +250,11 @@ async def add_num(m: Message):
     q = "INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?) ON CONFLICT (phone_number) DO NOTHING" if use_pg else "INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)"
     params = [(srv, cntry, rate, n) for n in nums if len(n) >= 5]
     added = db(q, params, commit=True, executemany=True) or 0
-    await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f} using fast bulk insertion!", parse_mode="HTML")
+    await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
+    
+    # Trigger broadcast alert to group and members
+    if added > 0:
+        await broadcast_new_stock(srv, cntry, added, rate)
 
 @dp.message(F.text.startswith("/broadcast"))
 async def handle_broadcast(m: Message):
@@ -300,7 +324,7 @@ async def num_assign(c: CallbackQuery):
     ]
     await c.message.edit_text(f"🌍 <b>{cntry} Number Assigned:</b>\n\n⏳ Waiting for OTP...\nPer OTP Rate: <b>${rate:.3f}</b>\n📦 <i>Remaining Stock:</i> <code>{rem_count}</code>\n", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
-dp.callback_query(F.data == "start_withdrawal")
+@dp.callback_query(F.data == "start_withdrawal")
 async def start_withdrawal_cb(c: CallbackQuery, state: FSMContext):
     min_w = get_min_withdrawal()
     bal = (db("SELECT balance FROM balances WHERE user_id = ?", (c.from_user.id,), fetch="one") or [0.0])[0]
@@ -546,7 +570,7 @@ async def generic_webhook(provider_name: str, request: Request):
         raw_otp = str(data.get("otp") or data.get("code") or "")
         if phone and body:
             unique_str = f"{provider_name.lower()}_{phone}_{body.strip()}"
-            mid = hashlib.md5(unique_str.encode()).hexdileged() if hasattr(hashlib, 'md5') else hashlib.md5(unique_str.encode()).hexdigest()
+            mid = hashlib.md5(unique_str.encode()).hexdigest()
             await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=raw_otp)
             return {"status": "success"}
     except Exception: pass
