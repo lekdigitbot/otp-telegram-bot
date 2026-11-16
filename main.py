@@ -27,14 +27,22 @@ http_session, DB_FILE = None, "/tmp/bot_data.db"
 class WithdrawalState(StatesGroup):
     waiting_for_details, waiting_for_amount = State(), State()
 
-def db(q, p=(), fetch=None, commit=False):
+class UploadFileState(StatesGroup):
+    waiting_for_details = State()
+    waiting_for_file = State()
+
+def db(q, p=(), fetch=None, commit=False, executemany=False):
     use_pg = bool(DATABASE_URL and HAS_PSYCOPG2)
     conn = psycopg2.connect(DATABASE_URL) if use_pg else sqlite3.connect(DB_FILE, timeout=10)
     try:
         with conn:
             cur = conn.cursor()
-            cur.execute(q.replace("?", "%s") if use_pg else q, p)
-            res = cur.fetchone() if fetch == "one" else (cur.fetchall() if fetch == "all" else (cur.rowcount if fetch == "rowcount" else None))
+            if executemany:
+                cur.executemany(q.replace("?", "%s") if use_pg else q, p)
+                res = cur.rowcount
+            else:
+                cur.execute(q.replace("?", "%s") if use_pg else q, p)
+                res = cur.fetchone() if fetch == "one" else (cur.fetchall() if fetch == "all" else (cur.rowcount if fetch == "rowcount" else None))
             if commit: conn.commit()
             return res
     finally: conn.close()
@@ -112,44 +120,33 @@ def build_countries_keyboard(srv):
     kb = [[InlineKeyboardButton(text=f" {c} | ${r:.3f}/OTP", callback_data=f"c_{srv}_{c}", style="primary")] for c, r, _ in rows]
     return InlineKeyboardMarkup(inline_keyboard=kb + [[InlineKeyboardButton(text="🔙 Back to Services", callback_data="cb_services_list", style="danger")]]), f"📌 <b>Select country for {srv.upper()}:</b>"
 
-# --- ADMIN CONFIGURATION & MANAGEMENT COMMANDS ---
-@dp.message(F.text.startswith("/setmin"))
-async def set_min_withdrawal(m: Message):
+# --- STEP-BY-STEP FILE UPLOAD FLOW ---
+@dp.message(F.text == "/uploadfile")
+async def start_upload_file(m: Message, state: FSMContext):
+    if m.from_user.id != ADMIN_ID: return
+    await state.set_state(UploadFileState.waiting_for_details)
+    await m.answer("📂 <b>Step 1/2:</b> Send the Service, Country, and Rate.\nExample: <code>Discord Haiti 0.0065</code>", parse_mode="HTML")
+
+@dp.message(UploadFileState.waiting_for_details)
+async def process_upload_details(m: Message, state: FSMContext):
     if m.from_user.id != ADMIN_ID: return
     parts = m.text.strip().split()
     if len(parts) < 2:
-        return await m.answer(f"⚠️ Current Minimum Withdrawal: <code>${get_min_withdrawal():.2f}</code>\nUsage: <code>/setmin 0.50</code>", parse_mode="HTML")
-    try:
-        new_min = float(parts[1])
-        q = "INSERT INTO bot_config (key, value) VALUES ('min_withdrawal', ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value" if use_pg else "INSERT OR REPLACE INTO bot_config (key, value) VALUES ('min_withdrawal', ?)"
-        db(q, (str(new_min),), commit=True)
-        await m.answer(f"✅ Minimum withdrawal updated successfully to <b>${new_min:.2f}</b>!", parse_mode="HTML")
-    except ValueError:
-        await m.answer("⚠️ Please enter a valid number (e.g. <code>/setmin 0.50</code>)", parse_mode="HTML")
-
-@dp.message(F.text.startswith("/clearservicecountry"))
-async def clear_service_country_h(m: Message):
-    if m.from_user.id != ADMIN_ID: return
-    parts = m.text.strip().split(maxsplit=2)
-    if len(parts) < 3:
-        return await m.answer("⚠️ Usage: <code>/clearservicecountry Service Country</code>", parse_mode="HTML")
-    srv, cntry = parts[1].capitalize(), parts[2].capitalize()
-    r = (db("DELETE FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="rowcount", commit=True) or 0) + (db("DELETE FROM assignments WHERE service = ? AND country = ?", (srv, cntry), fetch="rowcount", commit=True) or 0)
-    await m.answer(f"✅ Cleared <b>{srv}</b> for <b>{cntry}</b> ({r} entries removed).", parse_mode="HTML")
-
-@dp.message(F.document)
-async def handle_number_file(m: Message):
-    if m.from_user.id != ADMIN_ID: return
-    caption = m.caption or ""
-    if not caption.startswith("/uploadfile"):
-        return
+        return await m.answer("⚠️ Invalid format! Send Service and Country, e.g., <code>Discord Haiti 0.0065</code>", parse_mode="HTML")
     
-    parts = caption.split()
-    if len(parts) < 3:
-        return await m.answer("⚠️ Usage in caption: <code>/uploadfile Service Country [Rate]</code>\nExample: <code>/uploadfile Telegram Nigeria 0.003</code>", parse_mode="HTML")
+    srv, cntry = parts[0].capitalize(), parts[1].capitalize()
+    rate = float(parts[2]) if len(parts) >= 3 and re.sub(r"[^\d.]", "", parts[2]) else DEFAULT_OTP_RATE
     
-    srv, cntry = parts[1].capitalize(), parts[2].capitalize()
-    rate = float(parts[3]) if len(parts) >= 4 and re.sub(r"[^\d.]", "", parts[3]) else DEFAULT_OTP_RATE
+    await state.update_data(srv=srv, cntry=cntry, rate=rate)
+    await state.set_state(UploadFileState.waiting_for_file)
+    await m.answer(f"✅ Target set: <b>{srv} ({cntry}) at ${rate:.4f}</b>\n\n📂 <b>Step 2/2:</b> Now upload or send your numbers file (.txt or .csv)!", parse_mode="HTML")
+
+@dp.message(UploadFileState.waiting_for_file, F.document)
+async def process_upload_document(m: Message, state: FSMContext):
+    if m.from_user.id != ADMIN_ID: return
+    data = await state.get_data()
+    srv, cntry, rate = data.get("srv"), data.get("cntry"), data.get("rate", DEFAULT_OTP_RATE)
+    await state.clear()
 
     try:
         file_info = await bot.get_file(m.document.file_id)
@@ -158,34 +155,50 @@ async def handle_number_file(m: Message):
     except Exception as e:
         return await m.answer(f"❌ Failed to download file: {e}")
 
-    # Read raw lines (every line is treated as a number)
     nums = [re.sub(r"\D", "", l) for l in content.splitlines() if re.sub(r"\D", "", l.strip())]
-    added = 0
-    for n in nums:
-        if len(n) < 5: continue
-        try:
-            if use_pg: db("INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?) ON CONFLICT (phone_number) DO NOTHING", (srv, cntry, rate, n), commit=True)
-            else: db("INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)", (srv, cntry, rate, n), commit=True)
-            added += 1
-        except Exception: pass
-
+    
+    # Fast bulk insertion using executemany to avoid timeouts/freezes
+    q = "INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?) ON CONFLICT (phone_number) DO NOTHING" if use_pg else "INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)"
+    params = [(srv, cntry, rate, n) for n in nums if len(n) >= 5]
+    
+    added = db(q, params, commit=True, executemany=True) or 0
     await m.answer(f"✅ Successfully added <b>{added}</b> number(s) from file for <b>{srv} ({cntry})</b> at ${rate:.4f} per OTP!", parse_mode="HTML")
+
+# --- OTHER ADMIN COMMANDS ---
+@dp.message(F.text.startswith("/setmin"))
+async def set_min_withdrawal(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    parts = m.text.strip().split()
+    if len(parts) < 2: return await m.answer(f"⚠️ Current Min: <code>${get_min_withdrawal():.2f}</code>\nUsage: <code>/setmin 0.50</code>", parse_mode="HTML")
+    try:
+        new_min = float(parts[1])
+        q = "INSERT INTO bot_config (key, value) VALUES ('min_withdrawal', ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value" if use_pg else "INSERT OR REPLACE INTO bot_config (key, value) VALUES ('min_withdrawal', ?)"
+        db(q, (str(new_min),), commit=True)
+        await m.answer(f"✅ Minimum withdrawal updated to <b>${new_min:.2f}</b>!", parse_mode="HTML")
+    except ValueError:
+        await m.answer("⚠️ Enter a valid number.")
+
+@dp.message(F.text.startswith("/clearservicecountry"))
+async def clear_service_country_h(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    parts = m.text.strip().split(maxsplit=2)
+    if len(parts) < 3: return await m.answer("⚠️ Usage: <code>/clearservicecountry Service Country</code>", parse_mode="HTML")
+    srv, cntry = parts[1].capitalize(), parts[2].capitalize()
+    r = (db("DELETE FROM stock WHERE service = ? AND country = ?", (srv, cntry), fetch="rowcount", commit=True) or 0) + (db("DELETE FROM assignments WHERE service = ? AND country = ?", (srv, cntry), fetch="rowcount", commit=True) or 0)
+    await m.answer(f"✅ Cleared <b>{srv}</b> for <b>{cntry}</b> ({r} entries removed).", parse_mode="HTML")
 
 @dp.message(F.text.startswith("/addprovider"))
 async def add_provider_h(m: Message):
     if m.from_user.id != ADMIN_ID: return
     parts = m.text.strip().split(maxsplit=3)
-    if len(parts) < 4:
-        return await m.answer("⚠️ Usage: <code>/addprovider Name BaseURL API_Key</code>", parse_mode="HTML")
+    if len(parts) < 4: return await m.answer("⚠️ Usage: <code>/addprovider Name BaseURL API_Key</code>", parse_mode="HTML")
     name, base_url, api_key = parts[1].capitalize(), parts[2].strip().rstrip("/"), parts[3].strip()
     try:
-        if use_pg:
-            db("INSERT INTO providers (name, base_url, api_key) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET base_url = EXCLUDED.base_url, api_key = EXCLUDED.api_key", (name, base_url, api_key), commit=True)
-        else:
-            db("INSERT OR REPLACE INTO providers (name, base_url, api_key) VALUES (?, ?, ?)", (name, base_url, api_key), commit=True)
-        await m.answer(f"✅ Provider <b>{name}</b> added/updated successfully!", parse_mode="HTML")
+        q = "INSERT INTO providers (name, base_url, api_key) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET base_url = EXCLUDED.base_url, api_key = EXCLUDED.api_key" if use_pg else "INSERT OR REPLACE INTO providers (name, base_url, api_key) VALUES (?, ?, ?)"
+        db(q, (name, base_url, api_key), commit=True)
+        await m.answer(f"✅ Provider <b>{name}</b> added/updated!", parse_mode="HTML")
     except Exception as e:
-        await m.answer(f"❌ Error adding provider: {e}", parse_mode="HTML")
+        await m.answer(f"❌ Error: {e}", parse_mode="HTML")
 
 @dp.message(F.text == "/listproviders")
 async def list_providers_h(m: Message):
@@ -214,14 +227,10 @@ async def add_num(m: Message):
     rate = float(re.sub(r"[^\d.]", "", p[3])) if len(p) >= 4 and re.sub(r"[^\d.]", "", p[3]) else DEFAULT_OTP_RATE
     nums = [re.sub(r"\D", "", n) for l in lines[1:] for n in l.split(",") if re.sub(r"\D", "", n)]
     
-    added = 0
-    for n in nums:
-        try:
-            if use_pg: db("INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?) ON CONFLICT (phone_number) DO NOTHING", (srv, cntry, rate, n), commit=True)
-            else: db("INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)", (srv, cntry, rate, n), commit=True)
-            added += 1
-        except Exception: pass
-    await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f}!", parse_mode="HTML")
+    q = "INSERT INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?) ON CONFLICT (phone_number) DO NOTHING" if use_pg else "INSERT OR IGNORE INTO stock (service, country, rate, phone_number) VALUES (?, ?, ?, ?)"
+    params = [(srv, cntry, rate, n) for n in nums if len(n) >= 5]
+    added = db(q, params, commit=True, executemany=True) or 0
+    await m.answer(f"✅ Added {added} number(s) to {srv} ({cntry}) at ${rate:.4f} using fast bulk insertion!", parse_mode="HTML")
 
 @dp.message(F.text.startswith("/broadcast"))
 async def handle_broadcast(m: Message):
@@ -291,7 +300,7 @@ async def num_assign(c: CallbackQuery):
     ]
     await c.message.edit_text(f"🌍 <b>{cntry} Number Assigned:</b>\n\n⏳ Waiting for OTP...\nPer OTP Rate: <b>${rate:.3f}</b>\n📦 <i>Remaining Stock:</i> <code>{rem_count}</code>\n", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
-@dp.callback_query(F.data == "start_withdrawal")
+dp.callback_query(F.data == "start_withdrawal")
 async def start_withdrawal_cb(c: CallbackQuery, state: FSMContext):
     min_w = get_min_withdrawal()
     bal = (db("SELECT balance FROM balances WHERE user_id = ?", (c.from_user.id,), fetch="one") or [0.0])[0]
@@ -537,7 +546,7 @@ async def generic_webhook(provider_name: str, request: Request):
         raw_otp = str(data.get("otp") or data.get("code") or "")
         if phone and body:
             unique_str = f"{provider_name.lower()}_{phone}_{body.strip()}"
-            mid = hashlib.md5(unique_str.encode()).hexdigest()
+            mid = hashlib.md5(unique_str.encode()).hexdileged() if hasattr(hashlib, 'md5') else hashlib.md5(unique_str.encode()).hexdigest()
             await process_incoming_otp(otp_identifier=mid, phone=phone, body=body, raw_otp=raw_otp)
             return {"status": "success"}
     except Exception: pass
